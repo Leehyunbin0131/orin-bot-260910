@@ -185,6 +185,19 @@ class PreflightTests(unittest.TestCase):
             with self.subTest(rpm=rpm, turn=turn), self.assertRaises(ValueError):
                 base.configure_rectangle_profile(self.settings, parameters, rpm, turn)
 
+    def test_keyboard_profile_has_50rpm_on_both_axes_and_matched_slew(self):
+        parameters = yaml.safe_load((ROOT / 'config/controllers.yaml').read_text())[
+            'diff_drive_controller']['ros__parameters']
+        base.configure_keyboard_profile(self.settings, parameters)
+        linear = parameters['linear.x.max_velocity']
+        angular = parameters['angular.z.max_velocity']
+        self.assertAlmostEqual(linear / .0325, 218 * .0239691227)
+        self.assertAlmostEqual(angular * .22 / .0325, 218 * .0239691227)
+        for axis in ('linear.x', 'angular.z'):
+            vmax = parameters[f'{axis}.max_velocity']
+            self.assertAlmostEqual(vmax / parameters[f'{axis}.max_acceleration'], 4)
+            self.assertAlmostEqual(vmax / -parameters[f'{axis}.max_deceleration'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

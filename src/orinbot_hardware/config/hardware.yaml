@@ -45,6 +45,8 @@ lidar_z: 0.52
 # 2026-09-08: 카메라 쪽 실제 전진 시 엔코더 +x / ICP -x를 확인.
 # ROS laser 프레임의 +x는 본체 후방: 기존 전방 정렬 가정을 보정.
 lidar_yaw_degrees: 180.0
+# 로봇 정면 기준 좌우 135도. 원본 /scan_raw는 360도, /scan은 후방 90도 NaN 처리.
+lidar_fov_degrees: 270.0
 camera_x: 0.21
 camera_y: 0.0
 camera_z: 0.45

@@ -10,6 +10,8 @@ install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME}
 install(PROGRAMS scripts/probe_motors.py scripts/prepare_host.sh scripts/test_interfaces.py
   scripts/drive_distance.py scripts/drive_rectangle.py scripts/drive_fused_rectangle.py
   scripts/motion_service.py scripts/mapping_service.py
+  scripts/keyboard_drive.py scripts/front_scan.py
+  scripts/camera_preview.py
   scripts/guide_service.py scripts/guide_core.py scripts/guide_stt.py scripts/setup_guide_stt.sh
   DESTINATION lib/${PROJECT_NAME})
 ament_package()

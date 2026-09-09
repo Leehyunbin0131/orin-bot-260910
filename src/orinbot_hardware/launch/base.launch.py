@@ -158,6 +158,35 @@ def configure_rectangle_profile(settings, parameters, rpm, turn_rpm=10.0):
                                max_wheel_raw=math.floor(rpm/0.229)+math.floor(turn_rpm/0.229))
 
 
+def configure_keyboard_profile(settings, parameters):
+    """The dedicated keyboard publisher sends axis-exclusive commands."""
+    configure_bounded_wheel_profile(settings, parameters, 218)
+
+
+def configure_guide_profile(settings, parameters):
+    """The guide gate bounds combined wheel commands to nominal 60rpm."""
+    configure_bounded_wheel_profile(settings, parameters, 262)
+
+
+def configure_bounded_wheel_profile(settings, parameters, raw):
+    """Equal normalized slew on both axes preserves bounded wheel transitions.
+
+    Matching axis slew rates keeps transitions between translation
+    and rotation inside the wheel-speed diamond, even during rapid key changes.
+    The upstream publisher must keep combined translation/rotation within the
+    wheel-speed diamond; independent axis limits alone do not guarantee this.
+    """
+    linear = raw * 0.0239691227 * settings['wheel_radius']
+    turn = 2 * linear / settings['wheel_separation']
+    for axis, speed in (('linear.x', linear), ('angular.z', turn)):
+        parameters.update({f'{axis}.max_velocity': speed, f'{axis}.min_velocity': -speed,
+                           f'{axis}.max_acceleration': speed / 4.0,
+                           f'{axis}.max_deceleration': -speed,
+                           f'{axis}.max_acceleration_reverse': -speed / 4.0,
+                           f'{axis}.max_deceleration_reverse': speed})
+    validate_controller_limits(settings, parameters, 2 * raw)
+
+
 def build_geometry(settings):
     validate_settings(settings)
     description_path = Path(get_package_share_directory('orinbot_description')) / 'urdf/orinbot_hardware.urdf.xacro'
@@ -240,10 +269,16 @@ def setup(context):
         controllers = yaml.safe_load(source)
     straight_rpm = float(LaunchConfiguration('straight_test_rpm').perform(context))
     rectangle_rpm = float(LaunchConfiguration('rectangle_rpm').perform(context))
+    keyboard = LaunchConfiguration('keyboard_mode').perform(context) == 'true'
+    guide = LaunchConfiguration('guide_mode').perform(context) == 'true'
     parameters = controllers['diff_drive_controller']['ros__parameters']
-    if straight_rpm and rectangle_rpm:
+    if sum(bool(value) for value in (straight_rpm, rectangle_rpm, keyboard, guide)) > 1:
         raise ValueError('Select only one speed profile')
-    if rectangle_rpm:
+    if keyboard:
+        configure_keyboard_profile(settings, parameters)
+    elif guide:
+        configure_guide_profile(settings, parameters)
+    elif rectangle_rpm:
         configure_rectangle_profile(settings, parameters, rectangle_rpm,
             float(LaunchConfiguration('rectangle_turn_rpm').perform(context)))
     elif straight_rpm:
@@ -276,7 +311,8 @@ def setup(context):
              arguments=['joint_state_broadcaster', '-c', '/controller_manager', '-p', controller_file]),
         Node(package='controller_manager', executable='spawner', output='screen',
              arguments=['diff_drive_controller', '-c', '/controller_manager', '-p', controller_file,
-                        '--controller-ros-args', '--remap ~/cmd_vel:=/cmd_vel --remap ~/odom:=/odom']),
+                        '--controller-ros-args', '--remap ~/cmd_vel:='
+                        + ('/keyboard/cmd_vel' if keyboard else '/cmd_vel') + ' --remap ~/odom:=/odom']),
     ]
 
 
@@ -286,6 +322,10 @@ def generate_launch_description():
         DeclareLaunchArgument('config', default_value=default_config),
         DeclareLaunchArgument('mock_hardware', default_value='false', choices=['true', 'false']),
         DeclareLaunchArgument('enable_torque', default_value='false', choices=['true', 'false']),
+        DeclareLaunchArgument('keyboard_mode', default_value='false', choices=['true', 'false'],
+                              description='Fixed 50rpm keyboard profile; input /keyboard/cmd_vel'),
+        DeclareLaunchArgument('guide_mode', default_value='false', choices=['true', 'false'],
+                              description='60rpm profile for bounded guide_service commands'),
         DeclareLaunchArgument('straight_test_rpm', default_value='0',
                               description='Explicit straight-only speed test, 1-60 rpm; 0 uses normal limits'),
         DeclareLaunchArgument('rectangle_rpm', default_value='0',

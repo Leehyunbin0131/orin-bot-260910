@@ -28,6 +28,7 @@ from std_srvs.srv import Trigger
 from slam_toolbox.srv import SaveMap, SerializePoseGraph
 from tf2_ros import Buffer, TransformListener, TransformException
 import yaml
+from camera_preview import CameraPreview, serve_camera
 
 
 def verify_saved_map(directory):
@@ -69,6 +70,7 @@ def start_gui(node, port):
             except (BrokenPipeError, ConnectionResetError): pass
         def do_GET(self):
             path=urlparse(self.path).path
+            if serve_camera(self,node,path): return
             if path=='/': return self.reply(200,(node.share/'config/mapping_gui.html').read_bytes(),'text/html; charset=utf-8')
             if path=='/api/status':
                 data=json.loads(node.status(None,Trigger.Response()).message)
@@ -122,6 +124,7 @@ class MappingService(Node):
         self.tf = Buffer()
         self.listener = TransformListener(self.tf, self)
         self.group = ReentrantCallbackGroup()
+        self.camera_preview = CameraPreview(self)
         self.create_subscription(LaserScan, '/scan', self.scan_callback, qos_profile_sensor_data)
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.create_subscription(OccupancyGrid, '/map', self.map_callback,

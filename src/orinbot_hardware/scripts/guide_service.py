@@ -24,6 +24,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped,TwistStamped
 from nav_msgs.msg import Odometry,Path as NavPath
 from sensor_msgs.msg import LaserScan
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.srv import ManageLifecycleNodes
 from lifecycle_msgs.srv import GetState
 from std_srvs.srv import Empty
 from tf2_ros import Buffer,TransformListener,TransformException
@@ -34,6 +35,7 @@ from guide_core import SavedMap,atomic_json,resolve_room
 from guide_stt import LocalSTT
 from drive_rectangle import bounded_twist
 from mapping_service import MappingService
+from camera_preview import CameraPreview, serve_camera
 
 
 class GuideService(Node):
@@ -62,12 +64,16 @@ class GuideService(Node):
         self.final_state='cancelled';self.stable=None;self.stop_started=0.;self.last_voice='';self.target_room=None
         self.scan=self.odom=self.amcl=None;self.last_scan=self.last_odom=0.;self.initialized=False
         self.last_initial=0;self.last_nav=0.;self.nav_command=(0.,0.);self.path=[];self.feedback={}
+        self.initial_started=0.;self.last_amcl=0.;self.amcl_updates=0
+        self.nav_start_future=None;self.nav_start_error=''
         self.tf=Buffer();self.listener=TransformListener(self.tf,self)
         self.group=ReentrantCallbackGroup()
+        self.camera_preview=CameraPreview(self)
         self.action=ActionClient(self,NavigateToPose,'/navigate_to_pose',callback_group=self.group)
         self.lifecycle={};self.lifecycle_pending={};self.navigation_fault=False
         self.nomotion=self.create_client(Empty,'/request_nomotion_update',callback_group=self.group);self.nomotion_future=None
         self.lifecycle_clients={name:self.create_client(GetState,'/'+name+'/get_state',callback_group=self.group) for name in ('map_server','amcl','planner_server','controller_server','bt_navigator')}
+        self.nav_start=self.create_client(ManageLifecycleNodes,'/guide_lifecycle/manage_nodes',callback_group=self.group)
         self.create_timer(.5,self.poll_lifecycle)
         self.initial_pub=self.create_publisher(PoseWithCovarianceStamped,'/initialpose',10)
         self.velocity_pub=self.create_publisher(TwistStamped,'/cmd_vel',10) if self.drive else None
@@ -77,7 +83,7 @@ class GuideService(Node):
         self.create_subscription(TwistStamped,'/guide/nav_cmd_vel',self.nav_callback,10)
         self.create_subscription(NavPath,'/plan',self.path_callback,10)
         settings=yaml.safe_load((self.share/'config/hardware.yaml').read_text())
-        self.radius,self.track=settings['wheel_radius'],settings['wheel_separation'];self.wheel_limit=math.floor(10/.229)*.0239691227
+        self.radius,self.track=settings['wheel_radius'],settings['wheel_separation'];self.wheel_limit=math.floor(60/.229)*.0239691227
         self.stt=LocalSTT();self.create_timer(.05,self.tick)
         self.http=start_http(self,self.declare_parameter('gui_port',8080).value)
         self.get_logger().info(f'Guide GUI: http://127.0.0.1:{self.http.server_port}; drive={self.drive}')
@@ -99,9 +105,13 @@ class GuideService(Node):
     def odom_callback(self,msg):self.odom,self.last_odom=msg,time.monotonic()
     def path_callback(self,msg):self.path=[[p.pose.position.x,p.pose.position.y] for p in msg.poses] if msg.header.frame_id=='map' else []
     def amcl_callback(self,msg):
-        self.amcl=msg
-        stamp=msg.header.stamp.sec*10**9+msg.header.stamp.nanosec
-        if self.last_initial and stamp>=self.last_initial:self.initialized=True
+        with self.lock:
+            stamp=msg.header.stamp.sec*10**9+msg.header.stamp.nanosec
+            if msg.header.frame_id!='map' or not self.last_initial or stamp<self.last_initial:return
+            first=not self.initialized
+            self.amcl=msg;self.last_amcl=time.monotonic();self.amcl_updates+=1;self.initialized=True
+            if first:
+                self.event('localization_received',elapsed=time.monotonic()-self.initial_started)
     def nav_callback(self,msg):
         linear,angular=msg.twist.linear.x,msg.twist.angular.z
         if all(math.isfinite(v) for v in (linear,angular)) and self.fresh_stamp(msg.header.stamp):
@@ -109,7 +119,9 @@ class GuideService(Node):
 
     def send(self,v=0.,w=0.):
         if not self.velocity_pub:return
-        v,w=bounded_twist(max(0.,min(.03,v)),max(-.12,min(.12,w)),self.radius,self.track,self.wheel_limit)
+        linear_limit=self.wheel_limit*self.radius
+        angular_limit=2*linear_limit/self.track
+        v,w=bounded_twist(max(0.,min(linear_limit,v)),max(-angular_limit,min(angular_limit,w)),self.radius,self.track,self.wheel_limit)
         msg=TwistStamped();msg.header.stamp=self.get_clock().now().to_msg();msg.header.frame_id='base_footprint'
         msg.twist.linear.x,msg.twist.angular.z=v,w;self.velocity_pub.publish(msg)
 
@@ -132,23 +144,55 @@ class GuideService(Node):
                 try:self.lifecycle[name]=(result.result().current_state.id,time.monotonic())
                 except Exception:self.lifecycle[name]=(0,time.monotonic())
             future.add_done_callback(done)
+        self.start_navigation_if_localized()
+
+    def start_navigation_if_localized(self):
+        with self.lock:
+            if (not self.drive or not self.process or self.process.poll() is not None
+                    or self.navigation_fault or self.nav_start_future is not None or self.nav_start_error):return
+            if self.localization_problem() or not self.nav_start.service_is_ready():return
+            request=ManageLifecycleNodes.Request();request.command=ManageLifecycleNodes.Request.STARTUP
+            self.nav_start_future=self.nav_start.call_async(request)
+            def started(future):
+                with self.lock:
+                    if future is not self.nav_start_future:return  # A different map was loaded.
+                    try:
+                        if not future.result().success:raise RuntimeError('Nav2 활성화 실패')
+                        self.event('navigation_stack_started')
+                    except Exception as exc:
+                        self.nav_start_error=f'주행 서버를 시작하지 못했습니다: {exc}. 맵을 다시 불러와 주세요.'
+            self.nav_start_future.add_done_callback(started)
+
+    def localization_problem(self):
+        for name in ('map_server','amcl'):
+            state,updated=self.lifecycle.get(name,(0,0))
+            if state!=3 or time.monotonic()-updated>2:return '맵과 라이다 위치 추정기를 준비하고 있습니다.'
+        issue=self.input_problem()
+        if issue:return issue
+        if not self.last_initial:return '지도에서 로봇의 현재 위치와 방향을 지정하세요. 위치를 지정할 때까지 정지 상태로 기다립니다.'
+        if not self.initialized or self.amcl is None:
+            elapsed=int(time.monotonic()-self.initial_started)
+            hint=' 10초 넘게 결과가 없습니다. 라이다 수신 상태와 지정한 위치·방향을 확인하세요.' if elapsed>=10 else ''
+            return f'초기 위치 지정 후 라이다 위치 추정 결과 대기 중 · {elapsed}초.{hint}'
+        if any(not math.isfinite(self.amcl.pose.covariance[i]) or not 0<=self.amcl.pose.covariance[i]<=.25 for i in (0,7,35)):
+            return '위치 추정 오차가 큽니다. 현재 위치와 로봇 전방 방향을 확인하고 다시 지정하세요.'
+        try:
+            t=self.tf.lookup_transform('map','base_footprint',Time())
+            if not self.fresh_stamp(t.header.stamp):return '로봇 위치 정보가 오래됐습니다.'
+        except TransformException:return '라이다 결과는 수신했지만 맵 기준 로봇 위치 연결을 기다리고 있습니다.'
+        return ''
 
     def ready_problem(self):
         if not self.drive:return '호실 편집 모드입니다. 실제 주행은 drive:=true로 실행하세요.'
         if self.selected is None:return '맵을 선택하세요.'
         if self.navigation_fault:return '주행 오류 후에는 맵을 다시 불러오고 현재 위치를 지정하세요.'
         if not self.process or self.process.poll() is not None:return 'Nav2가 실행되지 않았습니다.'
-        if any(self.lifecycle.get(name,(0,0))[0]!=3 or time.monotonic()-self.lifecycle.get(name,(0,0))[1]>2 for name in self.lifecycle_clients):
-            return 'Nav2 서버 활성화를 기다리고 있습니다.'
-        issue=self.input_problem()
+        issue=self.localization_problem()
         if issue:return issue
-        if not self.initialized or self.amcl is None:return '지도에서 로봇의 현재 위치와 방향을 지정하세요.'
-        if any(not math.isfinite(self.amcl.pose.covariance[i]) or self.amcl.pose.covariance[i]>.25 for i in (0,7,35)):
-            return '위치 추정 오차가 큽니다. 현재 위치와 라이다 방향을 확인하세요.'
-        try:
-            t=self.tf.lookup_transform('map','base_footprint',Time())
-            if not self.fresh_stamp(t.header.stamp):return '로봇 위치 정보가 오래됐습니다.'
-        except TransformException:return '맵 기준 로봇 위치를 기다리고 있습니다.'
+        if self.nav_start_error:return self.nav_start_error
+        waiting=[name for name in ('planner_server','controller_server','bt_navigator')
+                 if self.lifecycle.get(name,(0,0))[0]!=3 or time.monotonic()-self.lifecycle.get(name,(0,0))[1]>2]
+        if waiting:return '라이다 위치 추정 확인 · 주행 서버 준비 중: '+', '.join(waiting)
         if self.count_publishers('/cmd_vel')!=1:return '다른 주행 프로그램이 켜져 있습니다. 종료하세요.'
         if not self.action.server_is_ready():return 'Nav2 준비 중입니다.'
         return ''
@@ -179,6 +223,8 @@ class GuideService(Node):
                 if self.drive and not self.process and (self.count_publishers('/map') or any(n in ('amcl','slam_toolbox','bt_navigator') for n,_ in self.get_node_names_and_namespaces())):
                     raise ValueError('다른 SLAM·Nav2가 실행 중입니다. 먼저 종료하세요.')
                 self.stop_nav_process();self.lifecycle.clear();self.navigation_fault=False;self.generation+=1;self.selected=candidate;self.map_id=map_id;self.initialized=False;self.last_initial=0;self.amcl=None;self.path=[]
+                self.initial_started=0.;self.last_amcl=0.;self.amcl_updates=0
+                self.nav_start_future=None;self.nav_start_error=''
                 atomic_json(self.settings_path,{'map_id':map_id})
                 self.state='ready';self.message='지도를 불러왔습니다. 호실을 등록하거나 로봇 위치를 지정하세요.'
                 if self.drive:
@@ -198,7 +244,9 @@ class GuideService(Node):
             msg.pose.pose.position.x=float(x);msg.pose.pose.position.y=float(y)
             msg.pose.pose.orientation.z=math.sin(yaw/2);msg.pose.pose.orientation.w=math.cos(yaw/2)
             msg.pose.covariance[0]=msg.pose.covariance[7]=.04;msg.pose.covariance[35]=.04
-            self.last_initial=self.get_clock().now().nanoseconds;self.initialized=False;self.initial_pub.publish(msg)
+            self.last_initial=self.get_clock().now().nanoseconds;self.initialized=False;self.amcl=None
+            self.initial_started=time.monotonic();self.last_amcl=0.;self.amcl_updates=0;self.initial_pub.publish(msg)
+            self.event('initial_pose_requested',x=x,y=y,yaw=yaw)
             self.message='현재 위치를 지정했습니다. 라이다 위치 추정을 기다립니다.'
 
     def navigate(self,room_name):
@@ -285,7 +333,21 @@ class GuideService(Node):
                 robot=[t.translation.x,t.translation.y,math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))]
             except TransformException:pass
             issue=self.ready_problem()
-            return {'state':self.state,'message':self.message,'drive':self.drive,'ready':not issue,'readiness_issue':issue,
+            message=self.message
+            if self.drive and self.state=='ready':message=issue or '위치 추정과 주행 준비가 완료됐습니다. 목적지를 요청하면 출발합니다.'
+            now=time.monotonic()
+            def age(last):return round(max(0.,now-last),1) if last else None
+            uncertainty=None
+            if self.amcl is not None:
+                values=[self.amcl.pose.covariance[i] for i in (0,7,35)]
+                if all(math.isfinite(v) and v>=0 for v in values):
+                    uncertainty={'x_m':math.sqrt(values[0]),'y_m':math.sqrt(values[1]),'yaw_deg':math.degrees(math.sqrt(values[2]))}
+            localization={'initial_set':bool(self.last_initial),'received':self.initialized,
+                          'updates':self.amcl_updates,'scan_age_s':age(self.last_scan),
+                          'pose_age_s':age(self.last_amcl),'waiting_s':age(self.initial_started) if not self.initialized else None,
+                          'uncertainty':uncertainty}
+            return {'state':self.state,'message':message,'drive':self.drive,'ready':not issue,'readiness_issue':issue,
+                'localization':localization,
                 'maps':self.catalog(),'map_id':self.map_id,'map':self.selected.metadata() if self.selected else None,
                 'robot':robot,'path':self.path,'stt_ready':self.stt.ready(),'last_voice':self.last_voice,
                 'target_room':self.target_room,'feedback':self.feedback,'stationary':bool(self.stationary()),'epoch':self.generation}
@@ -308,6 +370,7 @@ def start_http(node,port):
             try:self.wfile.write(data)
             except (BrokenPipeError,ConnectionResetError):pass
         def do_GET(self):
+            if serve_camera(self,node,urlparse(self.path).path):return
             if self.path=='/':return self.reply(200,(node.share/'config/guide_gui.html').read_bytes(),'text/html; charset=utf-8')
             if self.path=='/api/status':return self.reply(200,node.snapshot())
             if self.path.startswith('/api/map.png') and node.selected:return self.reply(200,node.selected.png,'image/png')
