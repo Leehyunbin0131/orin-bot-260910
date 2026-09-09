@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<!--
+  ros2_control 정의.
+
+  시뮬레이션과 실제 로봇의 차이는 <hardware> 블록 하나뿐입니다.
+  실제 로봇으로 옮길 때는 sim_mode:=false 로 두고 아래 else 분기의
+  hardware plugin 을 직접 만든 hardware_interface 로 교체하면 되며,
+  diff_drive_controller 이상의 상위 스택은 전혀 건드릴 필요가 없습니다.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="orinbot_ros2_control" params="sim_mode:=true controllers_file:=''">
+
+    <ros2_control name="orinbot_system" type="system">
+
+      <hardware>
+        <xacro:if value="${sim_mode}">
+          <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+        </xacro:if>
+        <xacro:unless value="${sim_mode}">
+          <!-- TODO: 실제 로봇용 hardware_interface 로 교체 -->
+          <plugin>mock_components/GenericSystem</plugin>
+          <param name="calculate_dynamics">true</param>
+        </xacro:unless>
+      </hardware>
+
+      <joint name="left_wheel_joint">
+        <command_interface name="velocity">
+          <param name="min">-10.0</param>
+          <param name="max">10.0</param>
+        </command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+
+      <joint name="right_wheel_joint">
+        <command_interface name="velocity">
+          <param name="min">-10.0</param>
+          <param name="max">10.0</param>
+        </command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+
+    </ros2_control>
+
+    <xacro:if value="${sim_mode}">
+      <gazebo>
+        <plugin filename="gz_ros2_control-system"
+                name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+          <parameters>${controllers_file}</parameters>
+          <!--
+            토픽 리맵(/cmd_vel, /odom)은 여기가 아니라 스포너의
+            controller-ros-args 옵션으로 넘깁니다. controller_manager 노드에
+            직접 리맵 인자를 주는 방식은 Jazzy 에서 deprecated 되었습니다.
+            자세한 내용은 orinbot_bringup/launch/sim.launch.py 참고.
+          -->
+        </plugin>
+      </gazebo>
+    </xacro:if>
+
+  </xacro:macro>
+</robot>

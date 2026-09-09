@@ -1,0 +1,69 @@
+<!--
+  Nav2 기본 트리(navigate_to_pose_w_replanning_and_recovery.xml)에서
+  복구 순서만 바꾼 것입니다. 나머지는 동일합니다.
+
+  기본 순서:  코스트맵 지우기 -> Spin(90도) -> Wait(5초) -> BackUp(0.30 m)
+  이 트리:    코스트맵 지우기 -> BackUp(0.35 m) -> Spin(90도) -> Wait(3초)
+
+  왜 바꾸는가
+  ===========
+  1. 후진이 너무 늦게 온다.
+     막힌 뒤 후진에 도달하려면 앞의 세 단계를 다 거쳐야 하고, 각 단계마다
+     "실패 판정"(progress_checker) 시간이 다시 흐릅니다. 실측상 처음
+     후진하기까지 60~100초가 걸렸습니다.
+
+  2. 좁은 곳에서 Spin 은 위험하다.
+     이 로봇은 0.40 m 정사각이라 대각선이 0.566 m 입니다. 제자리 회전은
+     폭 0.566 m 를 요구하므로, 폭 0.60 m 통로에서는 편측 여유가 17 mm 밖에
+     안 됩니다 (우리 SLAM 자세 오차 중앙값 24 mm 보다 작습니다).
+     막힌 곳은 대개 좁은 곳이므로, 하필 가장 좁을 때 회전을 먼저 시도하는
+     셈입니다. 후진은 폭을 요구하지 않습니다.
+
+  Wait 을 5초에서 3초로 줄인 것은 이 로봇이 정적인 실내에서 도는 시뮬이라
+  "기다리면 사람이 비켜 준다" 상황이 없기 때문입니다. 실기에서 사람이
+  오가는 환경이라면 다시 늘리는 편이 낫습니다.
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+        <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+            <Sequence>
+              <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+              <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+            </Sequence>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+          <Sequence>
+            <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+            <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          </Sequence>
+        </RecoveryNode>
+      </PipelineSequence>
+      <Sequence>
+        <Fallback>
+          <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+          <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+        </Fallback>
+        <ReactiveFallback name="RecoveryFallback">
+          <GoalUpdated/>
+          <RoundRobin name="RecoveryActions">
+            <Sequence name="ClearingActions">
+              <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+              <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+            </Sequence>
+            <BackUp backup_dist="0.35" backup_speed="0.20" error_code_id="{backup_code_id}"/>
+            <Spin spin_dist="1.57" error_code_id="{spin_error_code}"/>
+            <Wait wait_duration="3.0"/>
+          </RoundRobin>
+        </ReactiveFallback>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

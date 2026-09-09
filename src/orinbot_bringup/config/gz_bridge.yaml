@@ -1,0 +1,129 @@
+# Gazebo Transport <-> ROS 2 브리지 설정.
+#
+# ROS 쪽 토픽 이름은 실제 realsense2_camera 노드가 내보내는 이름과 맞췄습니다
+# (camera_name:=camera, camera_namespace:="").
+# 따라서 실기로 옮길 때 구독 노드를 수정할 필요가 없습니다.
+#
+# cmd_vel / odom / joint_states / TF 는 ros2_control 이 직접 ROS 로
+# 퍼블리시하므로 브리지 대상이 아닙니다.
+#
+# Gazebo 가 만드는 포인트클라우드(/camera/depth/image/points)는 브리지하지
+# 않습니다. gz-sim 은 좌표를 카메라 "본체" 규약(x=전방)으로 채우면서
+# frame_id 만 광학 프레임(z=전방) 이름으로 붙여서, 그대로 쓰면 90도씩
+# 틀어집니다. 대신 depth_image_proc 이 ROS 쪽에서 생성합니다.
+
+# ---- 시뮬레이션 시간 ----
+# **ROS 쪽 이름이 /clock 이 아니라 /clock_raw 입니다.**
+# gz 는 물리 스텝마다(1 ms = 997 Hz) 시계를 냅니다. use_sim_time 인 rclpy
+# 노드는 그 메시지마다 파이썬 콜백을 돌아 시계를 갱신하는데, 비용이
+# 메시지당 고정이라 주파수에 그대로 비례합니다 — Orin 에서 노드당 약
+# 113%p 로, 그것만으로 6코어를 다 씁니다. 실기에는 /clock 이 아예
+# 없으므로 순수한 시뮬레이션 인공물입니다.
+# 그래서 scripts/clock_throttle.py 가 이걸 받아 /clock 으로 솎아 냅니다
+# (기본 100 Hz, sim.launch.py 의 clock_rate 인자).
+- ros_topic_name: "/clock_raw"
+  gz_topic_name: "/clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "gz.msgs.Clock"
+  direction: GZ_TO_ROS
+
+# ---- 지상 진실 자세 (시뮬레이션 전용) ----
+# battery_sim.py 가 "충전 접점이 실제로 맞닿았는가" 를 판정하는 데 씁니다.
+# 실기에서는 BMS 가 전류로 직접 알므로 이 항목도, battery_sim 도 없습니다.
+#
+# SLAM 자세(map->base_footprint)를 쓰면 안 되는 이유: 접점 접촉은 물리적
+# 사실인데 SLAM 자세에는 중앙값 21 mm / 90% 46 mm 의 오차가 있습니다.
+# 실측에서 이것 때문에 도킹이 100 mm 앞에서 끝났습니다 — 충전이 시작됐다고
+# 잘못 판정하면 docking_server 의 접근 루프가 거기서 종료됩니다.
+# /world/room/dynamic_pose/info 를 TFMessage 로 변환하면 안 됩니다 —
+# 그 메시지에는 프레임 이름을 담는 header.data 가 없어 frame_id 가 전부
+# 빈 문자열로 나옵니다 (실측 확인). URDF 의 OdometryPublisher 를 씁니다.
+# gz 쪽 이름은 OdometryPublisher 의 <odom_topic> 값 그대로입니다.
+# 모델 이름으로 네임스페이스가 붙지 않습니다 (/model/orinbot/... 아님).
+- ros_topic_name: "/ground_truth/odom"
+  gz_topic_name: "/ground_truth/odom"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+# ---- RPLIDAR A2M12 ----
+# 실기 드라이버(rplidar_ros)도 /scan 에 발행하고 frame_id 가 laser 입니다.
+- ros_topic_name: "/scan"
+  gz_topic_name: "/scan"
+  ros_type_name: "sensor_msgs/msg/LaserScan"
+  gz_type_name: "gz.msgs.LaserScan"
+  direction: GZ_TO_ROS
+
+# ---- infra1 (좌측 적외선) : VSLAM 이 사용하는 스트림 ----
+# 실기에서 depth 는 infra1 광학축 기준으로 나오므로 두 스트림은
+# align_depth 없이도 픽셀 단위로 정합됩니다.
+- ros_topic_name: "/camera/infra1/image_rect_raw"
+  gz_topic_name: "/camera/infra1/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/infra1/camera_info"
+  gz_topic_name: "/camera/infra1/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# ---- depth ----
+- ros_topic_name: "/camera/depth/image_rect_raw"
+  gz_topic_name: "/camera/depth/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/depth/camera_info"
+  gz_topic_name: "/camera/depth/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# ---- color : 사람이 보기 위한 용도 (저주기) ----
+- ros_topic_name: "/camera/color/image_raw"
+  gz_topic_name: "/camera/color/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/color/camera_info"
+  gz_topic_name: "/camera/color/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# ---- IMU ----
+# 실기 D435i 와 마찬가지로 자세(orientation)는 신뢰하지 말 것.
+# EKF(ekf.yaml)가 이 토픽에서 자이로의 vyaw 하나만 가져다 휠 엔코더와
+# 융합합니다. 자세 필터를 앞에 두지 않는 이유는 ekf.yaml 주석 참고.
+- ros_topic_name: "/camera/imu"
+  gz_topic_name: "/camera/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
+
+# ---- 사무실 월드의 보행자 (office.sdf 전용) ----
+# people_sim.py 가 여기로 속도를 줍니다. 원을 그리게 두면 통로 폭(1.8 m)
+# 보다 커서 벽을 뚫고 다니고 보기에도 무의미하므로, 복도를 따라 왕복하도록
+# ROS 쪽에서 조종합니다.
+# 다른 월드에서는 구독자가 없어 아무 일도 하지 않습니다.
+- ros_topic_name: "/person_0/cmd_vel"
+  gz_topic_name: "/model/person_0/cmd_vel"
+  ros_type_name: "geometry_msgs/msg/Twist"
+  gz_type_name: "gz.msgs.Twist"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/person_1/cmd_vel"
+  gz_topic_name: "/model/person_1/cmd_vel"
+  ros_type_name: "geometry_msgs/msg/Twist"
+  gz_type_name: "gz.msgs.Twist"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/person_2/cmd_vel"
+  gz_topic_name: "/model/person_2/cmd_vel"
+  ros_type_name: "geometry_msgs/msg/Twist"
+  gz_type_name: "gz.msgs.Twist"
+  direction: ROS_TO_GZ

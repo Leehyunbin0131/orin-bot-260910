@@ -1,0 +1,308 @@
+# 충전 도킹 설정 (opennav_docking).
+#
+# Nav2 가 도크 앞 0.7 m(staging pose)까지 데려다 주면 거기서부터는 마커를
+# 보면서 붙습니다. 일반 주행으로 벽까지 갈 수 없는 이유는 두 가지입니다.
+#   - 코스트맵 팽창(0.40 m)이 벽 앞을 통째로 막아 계획 자체가 안 됩니다.
+#   - SLAM 위치 오차가 중앙값 21 mm / 90% 46 mm 인데 접점은 그보다 작은
+#     오차를 요구합니다. 지도 좌표가 아니라 "지금 보이는 마커"가 기준입니다.
+#
+# fixed_frame 은 map 이 아니라 odom 입니다. 접근하는 몇 초 동안 SLAM 이
+# map->odom 을 수십 mm 씩 고쳐 넣는데, 그 보정이 그대로 목표 좌표의 점프가
+# 되어 최종 정렬을 망칩니다.
+#
+# 설계 근거 전반은 docs/ros2-lessons.md 6장.
+
+docking_server:
+  ros__parameters:
+    use_sim_time: true
+
+    # 필수. false 면 docking_server 가 Twist 를 내보내고
+    # diff_drive_controller(TwistStamped 구독)가 조용히 무시합니다.
+    # 증상은 "도킹은 진행되는데 로봇이 제자리".
+    enable_stamped_cmd_vel: true
+
+    controller_frequency: 50.0
+    # 처음 마커를 찾는 데 주는 시간. 카메라 15 Hz 에 staging 도착 직후
+    # 로봇이 아직 흔들리고 있어 몇 프레임은 놓칩니다.
+    initial_perception_timeout: 20.0
+    dock_approach_timeout: 60.0
+    wait_charge_timeout: 10.0
+    undock_linear_tolerance: 0.05
+    undock_angular_tolerance: 0.05
+    max_retries: 3
+    # Nav2 나머지 설정과 같은 프레임 (nav2_params.yaml 참고)
+    base_frame: base_footprint
+    fixed_frame: odom
+    dock_backwards: false
+    # 이 거리 안에 이미 서 있으면 staging 이동을 건너뜁니다
+    dock_prestaging_tolerance: 0.5
+
+    dock_plugins: ['orinbot_dock']
+    orinbot_dock:
+      plugin: opennav_docking::SimpleChargingDock
+
+      # --- 마커 기반 검출 ---
+      use_external_detection_pose: true
+      # 검출이 끊긴 뒤에도 마지막 값을 이만큼 더 씁니다. 검출기가 죽었을 때
+      # 무한정 옛 목표로 밀고 들어가지 않도록 한도를 둡니다.
+      external_detection_timeout: 4.0
+      # 마커면 -> 도킹 완료 시 로봇 중심. 도크 x축(진행 방향) 기준이라 음수.
+      # **home_dock.pose 를 옮기면 이 값도 같이 고쳐야 합니다.**
+      # 거리 편차 보정이 필요하면 자세를 확정하는 지점의 편차를
+      # tools/dock_range.py 로 재서 더하세요 (평균이 아니라 최근접 지점 값).
+      external_detection_translation_x: -0.294
+      external_detection_translation_y: 0.0
+      # ArUco 마커 좌표계 -> "x 가 도크 정면" 으로 돌리는 회전.
+      # tools/dock_calib.py 로 뽑았습니다. 틀리면 마커는 멀쩡히 검출되는데
+      # 로봇이 도크 옆구리로 파고듭니다.
+      external_detection_rotation_roll: 0.0
+      external_detection_rotation_pitch: 1.5708
+      external_detection_rotation_yaw: 0.0
+      # 검출 저역통과 필터. **0 이 "새 측정을 그대로 쓴다"** 입니다
+      # (pose_filter.hpp — 직관과 반대). 자세 확정 전 구간의 흔들림만
+      # 다듬으면 되므로 0.5.
+      filter_coef: 0.5
+
+      # --- 붙었는지 / 충전 중인지 판정 ---
+      # 목표 자세와 이만큼 안으로 들어오면 "붙었다"로 봅니다. 자세 확정
+      # 지점부터는 휠 오도메트리로만 들어가는데 그 구간의 정확도가 mm
+      # 수준이라 Nav2 기본값 0.05 는 헐거워 접점이 덜 물립니다.
+      # battery_sim 의 contact_tolerance_lon(0.048)이 이 값보다 **커야**
+      # 합니다 — 작으면 "도착했는데 충전이 안 잡히는" 교착이 납니다.
+      docking_threshold: 0.03
+      # **접근 종료 조건에 충전 여부를 넣지 않습니다.**
+      # docking_server 의 접근 루프는 isDocked() 뿐 아니라 isCharging()
+      # 으로도 빠져나옵니다. 접점은 위치 허용치가 넓어(세로 ±48 mm) 목표보다
+      # 한참 앞에서 "충전 시작"이 걸려 접근이 거기서 끝납니다. 반대로
+      # 허용치를 좁히면 도달했는데 충전이 안 잡혀 재시도만 반복합니다.
+      #
+      # 위치 정밀도와 충전 확인을 한 조건에 묶은 것이 원인이므로 나눕니다.
+      #   docking_server : 확정된 목표까지 정확히 들어가는 것만
+      #   auto_dock.py   : /battery_state 로 충전 시작 확인, 실패 시 재도킹
+      use_battery_status: false
+      charging_threshold: 0.5
+      # 바퀴 멈춤으로 접촉을 감지하지 않습니다. 접점에 닿기 전에 멈추도록
+      # 거리를 잡아 두었습니다.
+      use_stall_detection: false
+
+      # --- 대기 위치 ---
+      # 도크에서 0.7 m 뒤. 벽 팽창(0.40 m) 밖이라 경로계획이 됩니다.
+      staging_x_offset: -0.7
+      staging_yaw_offset: 0.0
+
+    docks: ['home_dock']
+    home_dock:
+      type: orinbot_dock
+      # 지도 좌표. 실기에서는 도크를 놓고 한 번 수동으로 붙여 본 뒤 그때의
+      # base_footprint 자세를 적으면 됩니다. 최종 정렬은 마커가 잡으므로
+      # 수 cm 어긋나도 무방합니다.
+      frame: map
+      pose: [1.0, -3.67, -1.5708]
+
+    controller:
+      # nav2_graceful_controller 의 smooth control law.
+      k_phi: 3.0
+      k_delta: 2.0
+      beta: 0.4
+      lambda: 2.0
+      v_linear_min: 0.05
+      v_linear_max: 0.15
+      v_angular_max: 0.75
+      slowdown_radius: 0.25
+
+      # 접근 구간에서는 코스트맵 충돌 검사를 끕니다.
+      #
+      # 도크 앞 0.7 m 는 "벽에 일부러 붙으러 가는" 구간이라 충돌 검사의
+      # 전제가 성립하지 않습니다. 코스트맵은 도크 패널과 뒷벽을 장애물로
+      # 보고 팽창(0.40 m)까지 씌우므로 구간 대부분이 충돌로 읽히고, 켜 두면
+      # 도킹이 error_code 905 로 끝납니다. dock_collision_threshold 로
+      # 도크 근처를 예외 처리하는 방법은 통하지 않습니다 — 이 임계값은
+      # "도크로부터의 거리"로 단순 동작하지 않습니다.
+      #
+      # staging pose 까지는 Nav2 가 자기 코스트맵으로 회피하므로 보호가
+      # 없는 구간은 마지막 0.7 m 뿐입니다.
+      # **실기에서는 그 구간을 위해 범퍼 스위치나 모터 전류 제한 같은
+      # 소프트웨어 밖의 보호 수단이 필요합니다.**
+      use_collision_detection: false
+      dock_collision_threshold: 0.75
+      costmap_topic: /local_costmap/costmap_raw
+      footprint_topic: /local_costmap/published_footprint
+      transform_tolerance: 0.2
+      projection_time: 3.0
+      simulation_time_step: 0.1
+
+# ---------------------------------------------------------------------------
+# 마커 검출기 (scripts/dock_marker_board.py).
+#
+# image_proc/track_marker_node 를 쓰지 않는 이유: 그 노드는 마커 한 장만
+# 추적합니다. 이 스테이션에는 가이드 벽이 없어 최종 각도를 인식이 전적으로
+# 결정하는데, 정면에 가까운 평면 마커 한 장은 자세 모호성으로 각도가 크게
+# 튑니다(1.3 m 에서 4.77도). 좌우로 벌린 3장을 하나의 보드로 풀면 모호성
+# 자체가 사라집니다.
+#
+# 컬러 스트림을 씁니다 — VSLAM 이 이미 15 Hz 로 받고 있어 추가 렌더링
+# 부담이 없습니다.
+dock_marker_board:
+  ros__parameters:
+    use_sim_time: true
+    # generate_textures.py 의 ARUCO_DICT (0 = cv2.aruco.DICT_4X4_50)
+    dictionary: 0
+    # generate_room.py 의 DOCK_MARKER_IDS / DOCK_MARKER_DX 와 짝입니다.
+    marker_ids: [1, 0, 2]
+    marker_dx: [-0.16, 0.0, 0.16]
+    # 검은 사각형 한 변 [m]. 흰 여백(판 0.14 m)은 제외합니다.
+    marker_size: 0.10
+    min_markers: 2
+    # 자세를 확정하는 카메라-마커 거리 [m]. 0.45 는 로봇 중심 기준 0.65 m
+    # (카메라가 중심보다 0.20 m 앞).
+    #
+    # 정확도는 가까울수록 좋지만 로봇 중심 0.55 m 부근에 검출 절벽이
+    # 있습니다 — 바깥 마커가 **가로로** 화각을 벗어납니다
+    # (0.210 m / tan34.7도 = 카메라 0.303 m = 로봇 중심 0.516 m).
+    # 그 앞에서 여유를 두고 확정합니다.
+    lock_distance: 0.45
+    unlock_distance: 0.70
+    fixed_frame: odom
+    lock_publish_rate: 15.0
+
+# ---------------------------------------------------------------------------
+# 단계 도킹 서버 (scripts/staged_dock.py).
+#
+# docking_mode:=staged 일 때 opennav_docking 대신 씁니다. 액션 규격
+# (/dock_robot, /undock_robot)은 같으므로 auto_dock 은 그대로입니다.
+#
+# 왜 단계를 끊는가: 정지 상태 인식 정확도가 각도 0.01도인데 곡선 접근으로
+# 붙이면 최종 각도 오차가 1.8도 나옵니다. 차이는 인식이 아니라 제어에서
+# 생깁니다 — Nav2 의 staging 도착 허용 오차(±200 mm / ±14.3도)를 0.65 m
+# 안에 다 펴야 하는데 다 못 펴고 도착합니다. 단계를 끊으면 보정 후 다시
+# 정지해 다시 재므로 오차가 누적되지 않습니다.
+staged_dock:
+  ros__parameters:
+    use_sim_time: true
+    dock_id: home_dock
+    # dock_x/dock_y 는 도킹 완료 시 로봇 중심, dock_yaw 는 **접근할 때
+    # 바라보는 방향**입니다 (후진 도킹이라 최종 자세는 여기서 180도 돌아간
+    # 상태).
+    dock_x: 1.0
+    dock_y: -3.67
+    dock_yaw: -1.5708
+    # 마커면 -> 도킹 완료 자세 [m]
+    dock_distance: 0.224
+
+    # 후진 도킹. 정렬은 도크를 마주 본 채 끝내고 회전점에서 180도 돌아
+    # 뒤로 들어갑니다. 충전 내내 카메라가 벽이 아니라 방을 보므로 시각
+    # 오도메트리가 살아 있습니다 (전진 도킹에서는 도킹 한 사이클에 SLAM
+    # 드리프트가 935 mm 까지 벌어집니다).
+    # 끄려면 월드 생성기의 REVERSE_DOCK 도 함께 false 로 바꾸고 월드를
+    # 다시 내보내야 합니다 — 동판 위치가 따라 움직입니다.
+    reverse_dock: true
+
+    # 마커면 -> 180도 회전 지점 [m].
+    #
+    # 제약은 섀시가 아니라 **캐스터입니다.** 캐스터는 x=±0.14 y=±0.14 라
+    # 회전 반지름이 0.198 m 인데 구 반지름이 0.030 m 뿐이라 높이 0.040 m 인
+    # 동판 턱을 넘지 못하고 걸립니다. 0.55 m 에서 여유 178 mm.
+    #
+    # 그리고 검출 절벽(로봇 중심 0.516 m) 위여야 회전 직전에 마커로 다시
+    # 잴 수 있습니다. 후진량은 고정이 아니라 그때 잰 거리에서
+    # dock_distance 를 뺀 값이라 회전점 오차가 도크로 옮겨가지 않습니다.
+    rotate_distance: 0.55
+    # 회전점 허용 오차 [m]. 이 거리의 마커 거리 정확도가 ±1.4 mm 라
+    # 여유가 열 배입니다.
+    rotate_tolerance: 0.02
+    # 마커면 -> 진입점 [m]. 여기서 멈춰 정렬합니다. 마커 3장이 모두 보이는
+    # 한계(0.55 m) 앞에서 여유를 둡니다.
+    approach_distance: 0.65
+
+    # 정렬 판정 — 축별로 재지 않습니다.
+    # ==================================================================
+    # 횡오차와 각도오차는 독립이 아닙니다. 정렬 후 직진하는 동안 각도는
+    # 그대로 횡오차로 바뀝니다:
+    #     접촉 시점 횡오차 = 정렬시 횡오차 - 직진거리 * sin(각도오차)
+    # 0.52 m 직진 기준 0.5도가 4.5 mm, 1도가 9.1 mm, 2도가 18 mm.
+    # 축별 허용치를 따로 두면 서로 모순된 목표가 되어 루프가 수렴하지
+    # 않습니다.
+    #
+    # 그래서 물리적으로 의미 있는 양 하나로 판정합니다 — 접촉 시점의 예상
+    # 횡오차. 크랩 보정량도 측정된 lat 이 아니라 이 예상값을 씁니다.
+    # 그래야 고치지 않고 남겨 둔 각도가 만들 흘러감까지 상쇄됩니다.
+    #
+    # 정렬 루프가 이 값 안에 들면 멈추므로 **이 값이 그대로 최종 가로
+    # 오차의 규모가 됩니다.** 크랩 기동 분해능이 3~5 mm 라 그 아래로
+    # 조이면 헛돌기만 합니다.
+    contact_lateral_budget: 0.006
+    # 각도 상한. 정밀도가 아니라 "측정이 이상하지 않은지" 감시용입니다.
+    # 1도면 위 식으로 9 mm 라 예산 안에서 크랩이 흡수합니다.
+    yaw_tolerance: 0.0175      # 1.0도
+    # 각도 오차가 yaw_tolerance 를 넘으면 그 회차는 회전만 하고 넘어가므로,
+    # 크랩 보정 기회는 이 값의 절반쯤입니다. 4 로 두면 진입 횡오차가 클 때
+    # 수렴 전에 소진됩니다 (실측: 196 -> 35 mm 까지 줄다가 중단).
+    max_align_iters: 6
+    # 정렬 후 스테이션과 최소 여유 [m]. 후진 크랩이라 보통 저절로
+    # 만족하지만 진입이 너무 가까웠던 경우를 위한 보호입니다.
+    min_standoff: 0.62
+
+    # 크랩 기동 각도. 차동구동은 옆으로 못 가므로 횡오차를 없애려면
+    # 회전 -> 직진 -> 반대회전 이 필요합니다. 30도면 횡 10 mm 에 직진
+    # 20 mm 라 회전 슬립이 거의 없습니다.
+    # **직진은 후진 방향입니다.** 전진으로 하면 도크 쪽으로 횡오차의
+    # 1.73배(= s*cos30도)만큼 다가가 보정할수록 여유가 줄어듭니다.
+    crab_angle: 0.5236
+    v_rotate: 0.35
+    v_forward: 0.08
+    # 목표 직전 미세 접근 속도 [m/s] 와 정지 데드밴드 [m].
+    # 이 둘이 세로 오차의 하한을 정합니다 — 제어 주기가 0.02 s 이므로
+    # 0.01 m/s 면 한 틱에 0.2 mm 입니다.
+    v_creep: 0.01
+    forward_tolerance: 0.0005
+    settle_time: 0.7
+    measure_samples: 12
+    measure_timeout: 5.0
+    undock_distance: 0.5
+    marker_pitch: 1.5708
+
+# ---------------------------------------------------------------------------
+# 저전압 자동 복귀 + 충전 중 절전 (scripts/auto_dock.py).
+auto_dock:
+  ros__parameters:
+    use_sim_time: true
+    dock_id: home_dock
+    low_soc: 0.20
+    resume_soc: 0.90
+    power_save: true
+    # 충전 중 재울 것들. std_srvs/Empty 규격이면 무엇이든 넣을 수 있습니다.
+    #
+    # 실기에서는 여기에 카메라/라이다 드라이버 정지 서비스를 추가하세요.
+    # 시뮬레이터에서는 Gazebo 센서를 ROS 에서 끌 수단이 없어 그대로
+    # 돌아갑니다 — 그래서 시뮬 측정치로 실기 절감량을 추정할 수 없습니다.
+    extra_pause_services: ['/dock_marker_board/pause']
+    extra_resume_services: ['/dock_marker_board/resume']
+
+# ---------------------------------------------------------------------------
+# 도크 좌표 자동 등록 (scripts/dock_register.py).
+#
+# 도크에 붙은 채 부팅하면 그 자세를 도크 좌표로 등록합니다. 스테이션을 옮겨도
+# 로봇을 한 번 밀어 넣고 재부팅하면 되고, 좌표를 손으로 읽어 옮길 필요가
+# 없습니다. 청소로봇이 "충전 중에 매핑을 시작"하는 것과 같은 방식입니다.
+#
+# 저장하는 것은 **도킹 완료 자세**입니다. 진입점은 staged_dock 이
+# approach_distance 로 계산하므로, 앞으로 빼서 저장하면 두 배로 멀어집니다.
+dock_register:
+  ros__parameters:
+    use_sim_time: true
+    dock_id: home_dock
+    dock_type: orinbot_dock
+    # **staged_dock.reverse_dock 과 반드시 같아야 합니다.** 후진 도킹이면
+    # 최종 자세가 접근 방향의 정반대라 yaw 에서 180도를 뺍니다. 부호를
+    # 틀리면 로봇이 도크 반대편으로 진입점을 잡고 마커를 한 장도 못 봅니다.
+    reverse_dock: true
+    # Nav2 dock_database 규격이라 docking_mode:=smooth 로 바꿔도 그대로
+    # 쓸 수 있습니다.
+    database_path: ~/.ros/orinbot_docks.yaml
+    auto_register: true
+    # 접촉은 물리적 사실이므로 위치 추정이 아니라 충전 전류로 판정합니다.
+    charge_threshold: 0.5
+    settle_tolerance: 0.01
+    settle_samples: 10
+    settle_timeout: 120.0
+    target_nodes: ['/staged_dock']

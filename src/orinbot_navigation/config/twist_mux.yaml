@@ -1,0 +1,49 @@
+# 속도 명령 다중화기.
+#
+# 왜 필요한가:
+#   Nav2 의 velocity_smoother 는 활성 상태이면 목표가 없어도 20Hz 로 0 을
+#   계속 내보냅니다. 이것이 /cmd_vel 에 직접 물려 있으면 조이스틱이나
+#   키보드로 보낸 명령과 뒤섞여, 사람이 개입해도 로봇이 즉시 멈춥니다.
+#   실측: Nav2 가 떠 있는 동안 수동 명령이 전혀 먹지 않았습니다.
+#
+# 구조:
+#   controller_server -> /cmd_vel_nav -> velocity_smoother -> /cmd_vel_smoothed
+#   사람(조이스틱/키보드)  ------------------------------> /cmd_vel_teleop
+#                                twist_mux -> /cmd_vel -> diff_drive_controller
+#
+# 우선순위가 높은 입력이 timeout 안에 계속 들어오는 동안 낮은 쪽은 무시됩니다.
+# 사람이 손을 떼면 0.5초 뒤 자동으로 Nav2 로 되돌아갑니다.
+twist_mux:
+  ros__parameters:
+    use_sim_time: true
+    # diff_drive_controller 가 TwistStamped 를 구독하므로 필수입니다.
+    # 이 값이 false 면 twist_mux 가 Twist 로 내보내 로봇이 움직이지 않습니다.
+    use_stamped: true
+
+    topics:
+      navigation:
+        topic: cmd_vel_smoothed
+        timeout: 0.5
+        priority: 10
+      # 도킹은 velocity_smoother 를 거치지 않고 바로 들어옵니다.
+      # 접근 속도가 0.05~0.15 m/s 라 이미 충분히 느리고, 가속 제한을
+      # 한 번 더 걸면 마지막 정렬 명령이 지연되어 마커를 놓친 채로
+      # 밀고 들어가는 시간이 길어집니다.
+      # 우선순위는 주행보다 위, 사람보다 아래입니다.
+      docking:
+        topic: cmd_vel_dock
+        timeout: 0.5
+        priority: 50
+      teleop:
+        topic: cmd_vel_teleop
+        timeout: 0.5
+        priority: 100
+
+    # 잠금: std_msgs/Bool 이 true 인 동안 자기보다 낮은 우선순위를 전부 막습니다.
+    # 우선순위 255 이므로 teleop 까지 포함해 모든 명령이 정지합니다.
+    # 실기에서 비상정지 버튼을 여기에 물리면 됩니다.
+    locks:
+      e_stop:
+        topic: e_stop
+        timeout: 0.0
+        priority: 255

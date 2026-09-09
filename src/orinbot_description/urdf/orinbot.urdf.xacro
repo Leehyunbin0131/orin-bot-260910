@@ -1,0 +1,318 @@
+<?xml version="1.0"?>
+<!--
+  orinbot: 차동구동 이동로봇
+    - 중앙 양쪽에 구동륜 2개
+    - 앞/뒤에 각각 캐스터휠 2개 (총 4개)
+    - 전면에 Intel RealSense D435i (30도 하향)
+    - 상단에 RPLIDAR A2M12
+
+  실제 로봇 치수가 확정되면 아래 "치수 파라미터" 블록만 고치면 됩니다.
+  (config/controllers.yaml 의 wheel_separation / wheel_radius 도 같이 맞춰야 합니다)
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="orinbot">
+
+  <!-- 시뮬레이션용 플러그인/센서를 포함할지 여부 -->
+  <xacro:arg name="sim_mode" default="true"/>
+  <!-- gz_ros2_control 에 넘길 컨트롤러 설정 파일 경로 -->
+  <xacro:arg name="controllers_file" default=""/>
+  <!-- 실물 런치에서 실측 구동륜 치수를 전달합니다. 기본값은 기존 시뮬레이션 치수. -->
+  <xacro:arg name="wheel_radius" default="0.06"/>
+  <xacro:arg name="wheel_separation" default="0.34"/>
+
+  <xacro:include filename="$(find orinbot_description)/urdf/inertial_macros.xacro"/>
+  <xacro:include filename="$(find orinbot_description)/urdf/d435i.urdf.xacro"/>
+  <xacro:include filename="$(find orinbot_description)/urdf/rplidar_a2m12.urdf.xacro"/>
+  <xacro:include filename="$(find orinbot_description)/urdf/orinbot.ros2_control.xacro"/>
+
+  <!-- ======================= 치수 파라미터 ======================= -->
+  <!-- 40 cm 정육면체 섀시 -->
+  <xacro:property name="base_length" value="0.40"/>   <!-- 전후 길이 (x) -->
+  <xacro:property name="base_width"  value="0.40"/>   <!-- 좌우 폭  (y) -->
+  <xacro:property name="base_height" value="0.40"/>   <!-- 높이    (z) -->
+  <xacro:property name="base_mass"   value="10.0"/>
+
+  <xacro:property name="wheel_radius"     value="${float('$(arg wheel_radius)')}"/>
+  <xacro:property name="wheel_width"      value="0.03"/>
+  <xacro:property name="wheel_separation" value="${float('$(arg wheel_separation)')}"/> <!-- 좌우 구동륜 중심 간 거리 -->
+  <xacro:property name="wheel_mass"       value="0.5"/>
+
+  <!-- 캐스터 반지름을 구동륜의 절반으로 두면 섀시 바닥면이 자연스럽게 맞습니다 -->
+  <xacro:property name="caster_radius" value="${wheel_radius/2.0}"/>
+  <xacro:property name="caster_mass"   value="0.1"/>
+  <xacro:property name="caster_x"      value="${base_length/2.0 - 0.06}"/>
+  <xacro:property name="caster_y"      value="${base_width/2.0 - 0.06}"/>
+
+  <!-- 지면 대비 섀시 바닥 높이 = 캐스터 지름 -->
+  <xacro:property name="ground_clearance" value="${2*caster_radius}"/>
+  <!-- base_link(섀시 중심)의 지면 기준 높이 -->
+  <xacro:property name="base_z" value="${ground_clearance + base_height/2.0}"/>
+
+  <material name="chassis_grey"><color rgba="0.35 0.38 0.42 1.0"/></material>
+  <material name="wheel_black"><color rgba="0.1 0.1 0.1 1.0"/></material>
+  <material name="caster_silver"><color rgba="0.7 0.7 0.7 1.0"/></material>
+  <material name="pogo_gold"><color rgba="0.85 0.7 0.25 1.0"/></material>
+
+  <!-- ======================= 본체 ======================= -->
+
+  <!-- 지면에 투영된 기준 프레임 (Nav2 등이 사용) -->
+  <link name="base_footprint"/>
+
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${base_z}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
+      <material name="chassis_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
+    </collision>
+    <xacro:inertial_box mass="${base_mass}" x="${base_length}" y="${base_width}" z="${base_height}">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:inertial_box>
+
+    <!-- 충전 포고핀 브래킷 (배면 좌우 2개, 각 6핀)
+      도크 바닥의 동판 위에 얹혀 접촉합니다.
+
+      높이가 이 로봇에서 가장 빡빡한 치수입니다.
+        섀시 바닥      0.060 m  (= 접지고. 캐스터 지름)
+        브래킷 하단    0.045 m  <- 여기
+        동판 상면      0.040 m  (generate_room.py 의 DOCK_PLATE_Z)
+                       =====
+        포고 스트로크  0.005 m
+
+      **0.030 m 아래로 내리면 안 됩니다.** 코스트맵의
+      min_obstacle_height 가 0.03 이라 로봇은 30 mm 미만 물체를 장애물로
+      보지 않고 그냥 밟고 지나갑니다 (월드의 3 cm 문턱이 그 경계 시험용).
+      브래킷이 그보다 낮으면 코스트맵이 무시한 물체에 그대로 걸립니다.
+      반대로 0.060 m 위로 올리면 섀시 안에 들어가 동판에 닿지 않습니다.
+
+      좌우 위치도 자유롭지 않습니다. 구동륜이 ±0.17, 캐스터가 ±0.14 에
+      있어 바퀴가 지나가지 않는 띠는 |y| < 0.11 뿐입니다. 동판이 바퀴
+      경로에 걸리면 로봇이 동판 위로 올라타 버려 브래킷과의 간격이
+      그대로 유지됩니다.
+    -->
+    <!--
+      실물 커넥터: 6핀 2x3 배열 / 피치 2.54 mm / male / DIP(관통홀) 2개.
+      아래 30 mm 각 상자는 그 커넥터와 기판을 붙드는 **브래킷**이지
+      접촉면이 아닙니다. 전기적으로 닿아야 하는 면적은 핀 배열
+      6.1 x 3.5 mm 뿐이고, 접촉 허용치는 거기서 나옵니다
+      (generate_room.py 가 계산해 찍어 줍니다: 세로 ±48, 가로 ±34 mm).
+      브래킷이 동판 밖으로 걸쳐 있어도 무방합니다.
+
+      실기 확인 필요: 동판 상면 40 mm, 브래킷 하단 45 mm 이므로 핀이
+      브래킷 아래로 5 mm 이상 나와 있어야 합니다. 2.54 mm 피치 포고핀의
+      스트로크는 보통 1.5~2.5 mm 라 **자유 길이로 5 mm 를 메우고 남는
+      만큼만 압축 여유**가 됩니다. 그 여유가 곧 바닥 높이 편차(램프
+      기울기, 동판 두께 공차) 허용치이므로 부품 데이터시트로 확인하세요.
+    -->
+    <xacro:property name="pogo_x" value="-0.10"/>      <!-- 배면 쪽 -->
+    <xacro:property name="pogo_y" value="0.055"/>
+    <xacro:property name="pogo_bottom" value="0.045"/>  <!-- 지면 기준 -->
+    <xacro:property name="pogo_size" value="0.03"/>     <!-- 브래킷, 접촉면 아님 -->
+    <xacro:property name="pogo_h" value="0.015"/>
+    <xacro:macro name="pogo_block" params="reflect">
+      <visual>
+        <origin xyz="${pogo_x} ${reflect * pogo_y}
+                     ${pogo_bottom + pogo_h/2.0 - base_z}" rpy="0 0 0"/>
+        <geometry><box size="${pogo_size} ${pogo_size} ${pogo_h}"/></geometry>
+        <material name="pogo_gold"/>
+      </visual>
+      <collision>
+        <origin xyz="${pogo_x} ${reflect * pogo_y}
+                     ${pogo_bottom + pogo_h/2.0 - base_z}" rpy="0 0 0"/>
+        <geometry><box size="${pogo_size} ${pogo_size} ${pogo_h}"/></geometry>
+      </collision>
+    </xacro:macro>
+    <xacro:pogo_block reflect="1"/>
+    <xacro:pogo_block reflect="-1"/>
+  </link>
+
+  <!-- ======================= 구동륜 ======================= -->
+  <!-- reflect: 왼쪽 +1, 오른쪽 -1 -->
+  <xacro:macro name="drive_wheel" params="prefix reflect">
+    <link name="${prefix}_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+        <material name="wheel_black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      </collision>
+      <xacro:inertial_cylinder mass="${wheel_mass}" radius="${wheel_radius}" length="${wheel_width}">
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+      </xacro:inertial_cylinder>
+    </link>
+
+    <joint name="${prefix}_wheel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${prefix}_wheel_link"/>
+      <origin xyz="0 ${reflect * wheel_separation/2.0} ${-base_height/2.0 - ground_clearance + wheel_radius}"
+              rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <dynamics damping="0.05" friction="0.1"/>
+    </joint>
+
+    <gazebo reference="${prefix}_wheel_link">
+      <mu1>1.2</mu1>
+      <mu2>1.2</mu2>
+      <kp>1e6</kp>
+      <kd>10.0</kd>
+      <material>Gazebo/Black</material>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:drive_wheel prefix="left"  reflect="1"/>
+  <xacro:drive_wheel prefix="right" reflect="-1"/>
+
+  <!-- ======================= 캐스터 4개 ======================= -->
+  <!--
+    캐스터는 회전 조인트를 모델링하지 않고 마찰 없는 구(sphere)로 처리합니다.
+    실제 캐스터의 스위블 동역학은 차동구동 주행에 거의 영향이 없고,
+    조인트를 넣으면 시뮬레이션이 불안정해지기 쉽습니다.
+  -->
+  <xacro:macro name="caster_wheel" params="prefix x_reflect y_reflect">
+    <link name="${prefix}_caster_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><sphere radius="${caster_radius}"/></geometry>
+        <material name="caster_silver"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><sphere radius="${caster_radius}"/></geometry>
+      </collision>
+      <xacro:inertial_sphere mass="${caster_mass}" radius="${caster_radius}">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+      </xacro:inertial_sphere>
+    </link>
+
+    <joint name="${prefix}_caster_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${prefix}_caster_link"/>
+      <origin xyz="${x_reflect * caster_x} ${y_reflect * caster_y}
+                   ${-base_height/2.0 - caster_radius}" rpy="0 0 0"/>
+    </joint>
+
+    <gazebo reference="${prefix}_caster_link">
+      <mu1>0.0</mu1>
+      <mu2>0.0</mu2>
+      <kp>1e6</kp>
+      <kd>10.0</kd>
+      <material>Gazebo/Grey</material>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:caster_wheel prefix="front_left"  x_reflect="1"  y_reflect="1"/>
+  <xacro:caster_wheel prefix="front_right" x_reflect="1"  y_reflect="-1"/>
+  <xacro:caster_wheel prefix="rear_left"   x_reflect="-1" y_reflect="1"/>
+  <xacro:caster_wheel prefix="rear_right"  x_reflect="-1" y_reflect="-1"/>
+
+  <!-- ======================= D435i ======================= -->
+  <!--
+    전면 중앙, 섀시 상단에서 10 cm 아래. 15도 아래를 봅니다.
+
+    15도를 고른 이유 (뎁스 화각 87도 x 56.5도 기준):
+      앞면 기준 사각지대 0.40 m
+      2 m 앞에서 높이 0.84 m 까지, 3 m 앞에서 1.07 m 까지 보임
+    30도였을 때는 0.35 m 이상 높이가 거리와 무관하게 안 보여서
+    도킹 마커나 벽면 표식을 놓쳤습니다.
+
+    지면 기준 높이 = base_link(0.26) + (0.20 - 0.10) = 0.36 m
+    ROS 규약에서 y축 양의 회전(pitch +)이 아래쪽을 향하므로 부호는 +입니다.
+
+    주의: 아래로 기울어져 있으면 뎁스 영상을 그대로 LaserScan 으로 바꿀 수
+    없습니다. 바닥이 통째로 장애물로 찍히기 때문입니다
+    (0.36 m / tan15도 -> 중심 광선이 약 1.34 m 앞 바닥에 닿음).
+    그래서 코스트맵에는 포인트클라우드를 높이 필터와 함께 넣습니다.
+    (orinbot_navigation/config/nav2_params.yaml 참고)
+  -->
+  <xacro:property name="camera_pitch" value="${radians(15)}"/>
+  <xacro:property name="camera_below_top" value="0.10"/>
+
+  <!-- 컬러 스트림 주기 [Hz]. 0 이면 끕니다.
+       실기 D435i 는 컬러/뎁스/IR 을 동시에 내보낼 수 있고, 컬러가 있으면
+       RTAB-Map 의 특징점 구별력이 올라가 잘못된 루프 클로저가 줄어듭니다.
+       시뮬에서는 gz-sim 의 렌더링 스레드가 따라오는지가 관건이라
+       여기서 조절하며 실측합니다 (tools/stream_rates.py). -->
+  <xacro:property name="camera_color_rate" value="15"/>
+  <!-- infra1 주기 [Hz]. 0 이면 끕니다.
+       컬러 방식(RTAB-Map 이 color + aligned_depth 를 씀)에서는 쓰지 않습니다.
+       실기에서 어두운 환경 대응이 필요해지면 되살리세요. -->
+  <xacro:property name="camera_infra1_rate" value="0"/>
+
+  <xacro:sensor_d435i name="camera" parent="base_link"
+                      color_rate="${camera_color_rate}"
+                      infra1_rate="${camera_infra1_rate}">
+    <origin xyz="${base_length/2.0} 0 ${base_height/2.0 - camera_below_top}"
+            rpy="0 ${camera_pitch} 0"/>
+  </xacro:sensor_d435i>
+
+  <!-- ======================= RPLIDAR A2M12 ======================= -->
+  <!--
+    섀시 상단면에 직접 장착. 상단 중앙에서 전방으로 15 cm.
+
+    지면 기준: 케이스 바닥 0.46 m (= 섀시 상단), 스캔 평면 0.4908 m
+
+    카메라(0.36 m)보다 13 cm 높고, 카메라는 섀시 앞면에 붙어 있어
+    라이다의 360도 시야를 가리지 않습니다.
+  -->
+  <xacro:property name="lidar_forward" value="0.15"/>
+
+  <!-- 링크 원점이 스캔 평면이므로, 케이스 바닥을 상단면에 놓으려면
+       데이터시트상 오프셋 30.8mm 를 더해야 합니다. -->
+  <xacro:property name="lidar_plane_above_base" value="0.0308"/>
+
+  <xacro:rplidar_a2m12 name="laser" parent="base_link">
+    <origin xyz="${lidar_forward} 0 ${base_height/2.0 + lidar_plane_above_base}"
+            rpy="0 0 0"/>
+  </xacro:rplidar_a2m12>
+
+  <!-- ======================= 섀시 Gazebo 속성 ======================= -->
+  <gazebo reference="base_link">
+    <material>Gazebo/Grey</material>
+  </gazebo>
+
+  <!-- ======================= 지상 진실 자세 (시뮬 전용) ======================= -->
+  <!--
+    Gazebo 가 아는 로봇의 "진짜" 자세를 내보냅니다. 실기에는 없는 것이므로
+    자율주행 스택은 절대 구독하면 안 됩니다. 쓰는 곳은 두 군데뿐입니다.
+      - battery_sim.py : 충전 접점이 실제로 맞닿았는지 판정
+      - tools/*.py     : SLAM 오차 측정의 기준값
+
+    왜 /world/room/dynamic_pose/info 를 브리지하지 않는가:
+    그 메시지에는 프레임 이름을 담는 header.data 가 없어서
+    ros_gz_bridge 의 Pose_V -> TFMessage 변환이 frame_id 를 전부 빈
+    문자열로 채웁니다. 그러면 어느 것이 로봇인지 구분할 수 없습니다
+    (실측 확인). OdometryPublisher 는 nav_msgs/Odometry 로 바로 나옵니다.
+
+    TF 는 내보내지 않습니다 — EKF 가 이미 odom->base_footprint 를
+    발행하고 있어 중복 발행이 되면 좌표계가 꼬입니다.
+  -->
+  <xacro:if value="$(arg sim_mode)">
+    <gazebo>
+      <plugin filename="gz-sim-odometry-publisher-system"
+              name="gz::sim::systems::OdometryPublisher">
+        <odom_frame>world</odom_frame>
+        <robot_base_frame>base_footprint</robot_base_frame>
+        <odom_topic>ground_truth/odom</odom_topic>
+        <odom_publish_frequency>20</odom_publish_frequency>
+        <dimensions>2</dimensions>
+      </plugin>
+    </gazebo>
+  </xacro:if>
+
+  <!-- ======================= ros2_control ======================= -->
+  <xacro:orinbot_ros2_control
+      sim_mode="$(arg sim_mode)"
+      controllers_file="$(arg controllers_file)"/>
+
+</robot>

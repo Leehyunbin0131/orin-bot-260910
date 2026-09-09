@@ -1,0 +1,63 @@
+# Local odometry comparison test. Existing wheel TF and sensor mounts are reused.
+# Neither estimator broadcasts TF: the follower explicitly reads /odometry/filtered.
+rectangle_ekf:
+  ros__parameters:
+    use_sim_time: false
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: false
+    print_diagnostics: true
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+    # Encoder velocities only: do not count integrated wheel pose a second time.
+    odom0: /odom
+    odom0_config: [false, false, false, false, false, false,
+                   true, false, false, false, false, true,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_differential: false
+    # Independent scan matching supplies local x/y/yaw, including slip correction.
+    odom1: /lidar/odom
+    odom1_config: [true, true, false, false, false, true,
+                   false, false, false, false, false, false,
+                   false, false, false]
+    odom1_queue_size: 10
+    odom1_differential: false
+    odom1_relative: true
+    # The RealSense IMU has no orientation estimate. Use angular velocity only.
+    imu0: /camera/imu
+    imu0_config: [false, false, false, false, false, false,
+                  false, false, false, false, false, true,
+                  false, false, false]
+    imu0_queue_size: 50
+    imu0_differential: false
+    imu0_remove_gravitational_acceleration: false
+
+lidar_odometry:
+  ros__parameters:
+    use_sim_time: false
+    frame_id: base_footprint
+    odom_frame_id: odom
+    publish_tf: false
+    publish_null_when_lost: true
+    wait_for_transform: 0.2
+    qos: 2  # BEST_EFFORT LaserScan input
+    topic_queue_size: 1
+    scan_range_min: 0.15
+    scan_range_max: 8.0
+    scan_voxel_size: 0.03
+    scan_cloud_is_2d: true
+    # No wheel/EKF pose guess: retain an independent check against wheel slip.
+    guess_frame_id: ''
+    Reg/Force3DoF: 'true'
+    Reg/Strategy: '1'
+    Odom/Strategy: '0'
+    Odom/ResetCountdown: '0'
+    Odom/FilteringStrategy: '0'
+    Icp/PointToPlane: 'false'
+    Icp/MaxCorrespondenceDistance: '0.15'
+    Icp/CorrespondenceRatio: '0.3'
+    Icp/Iterations: '30'
+    Icp/Epsilon: '0.001'

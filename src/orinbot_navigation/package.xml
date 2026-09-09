@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>orinbot_navigation</name>
+  <version>0.0.1</version>
+  <description>orinbot 의 RGB-D VSLAM(RTAB-Map) 및 Nav2 자율주행 설정</description>
+  <maintainer email="unit60888@gmail.com">hyunlee</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>orinbot_description</exec_depend>
+  <exec_depend>orinbot_bringup</exec_depend>
+
+  <!-- VSLAM -->
+  <exec_depend>rtabmap_odom</exec_depend>
+  <exec_depend>rtabmap_slam</exec_depend>
+  <exec_depend>rtabmap_viz</exec_depend>
+
+  <!-- Nav2 -->
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_smoother</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_waypoint_follower</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <!-- 코스트맵의 3D 복셀 레이어. nav2 에 포함되지 않은 별도 패키지입니다.
+       nav2_params.yaml 이 stvl_layer 플러그인으로 참조합니다. -->
+  <exec_depend>spatio_temporal_voxel_layer</exec_depend>
+  <!-- 자율주행 명령과 사람 명령의 중재. 없으면 수동 개입이 불가능합니다. -->
+  <exec_depend>twist_mux</exec_depend>
+
+  <!-- 충전 도킹 (launch/docking.launch.py, config/docking.yaml)
+       opennav_docking : Nav2 공식 도킹 태스크 서버 (/dock_robot, /undock_robot)
+       cv_bridge + opencv : scripts/dock_marker_board.py 가 ArUco 마커
+                            3장을 하나의 보드로 풀어 도크 자세를 냅니다. -->
+  <exec_depend>opennav_docking</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <!-- 프론티어 탐사 (scripts/frontier_explorer.py) -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

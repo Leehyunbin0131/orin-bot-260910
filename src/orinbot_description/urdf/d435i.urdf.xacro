@@ -1,0 +1,304 @@
+<?xml version="1.0"?>
+<!--
+  Intel RealSense D435i 간이 모델.
+
+  프레임 이름과 상대 위치(extrinsics)는 실제 realsense2_camera 노드가
+  퍼블리시하는 것과 동일하게 맞췄습니다. 따라서 시뮬레이션에서 개발한
+  노드를 실제 D435i로 옮길 때 TF/토픽 이름을 바꿀 필요가 없습니다.
+
+  광학 프레임(*_optical_frame)은 REP 103의 카메라 관례를 따릅니다:
+    x = 오른쪽, y = 아래, z = 전방
+  일반 프레임은 ROS 본체 관례 (x = 전방, y = 왼쪽, z = 위).
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!--
+    update_rate 기본값을 15 Hz 로 둔 이유:
+    848x480 컬러 + 뎁스를 30 Hz 로 렌더링하면 Gazebo 가 따라가지 못해
+    두 스트림의 발행 속도가 서로 어긋납니다(컬러 9 Hz / 뎁스 15 Hz 등).
+    그러면 RGB-D 동기화가 깨져 VSLAM 정확도가 떨어집니다.
+    15 Hz 로 낮추면 두 스트림이 같은 틱에 안정적으로 나옵니다.
+    실기 D435i 는 30 Hz 로 돌려도 되므로 이 값은 시뮬레이션 전용 타협입니다.
+  -->
+  <xacro:macro name="sensor_d435i"
+               params="name:=camera parent update_rate:=15 color_rate:=0 infra1_rate:=15 width:=424 height:=240
+                       depth_hfov:=1.518 color_hfov:=1.211 *origin">
+
+    <!-- 실제 D435i 외형 치수: 90 x 25 x 25 mm -->
+    <xacro:property name="d435_length" value="0.090"/>
+    <xacro:property name="d435_depth"  value="0.025"/>
+    <xacro:property name="d435_height" value="0.025"/>
+    <xacro:property name="d435_mass"   value="0.072"/>
+
+    <!-- 실제 D435i 내부 extrinsics (depth 기준, 단위 m) -->
+    <xacro:property name="depth_to_color_y" value="-0.015"/>
+    <xacro:property name="depth_to_imu_x"   value="-0.00552"/>
+    <xacro:property name="depth_to_imu_y"   value="0.0051"/>
+    <xacro:property name="depth_to_imu_z"   value="0.01174"/>
+
+    <!-- 마운트 지점: 이 링크의 원점이 카메라 하우징의 좌측 나사구멍 기준 -->
+    <link name="${name}_bottom_screw_frame"/>
+    <joint name="${name}_joint" type="fixed">
+      <xacro:insert_block name="origin"/>
+      <parent link="${parent}"/>
+      <child link="${name}_bottom_screw_frame"/>
+    </joint>
+
+    <!-- 카메라 본체 -->
+    <link name="${name}_link">
+      <visual>
+        <origin xyz="0 ${-depth_to_color_y} 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${d435_depth} ${d435_length} ${d435_height}"/>
+        </geometry>
+        <material name="d435_aluminium">
+          <color rgba="0.25 0.25 0.27 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 ${-depth_to_color_y} 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${d435_depth} ${d435_length} ${d435_height}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="${d435_mass}"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <inertia ixx="0.003881243" ixy="0.0" ixz="0.0"
+                 iyy="0.000498940" iyz="0.0"
+                 izz="0.003879257"/>
+      </inertial>
+    </link>
+    <joint name="${name}_link_joint" type="fixed">
+      <origin xyz="0.0106 0.0175 0.0125" rpy="0 0 0"/>
+      <parent link="${name}_bottom_screw_frame"/>
+      <child link="${name}_link"/>
+    </joint>
+
+    <!-- ===== Depth ===== -->
+    <link name="${name}_depth_frame"/>
+    <joint name="${name}_depth_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <parent link="${name}_link"/>
+      <child link="${name}_depth_frame"/>
+    </joint>
+
+    <link name="${name}_depth_optical_frame"/>
+    <joint name="${name}_depth_optical_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+      <parent link="${name}_depth_frame"/>
+      <child link="${name}_depth_optical_frame"/>
+    </joint>
+
+    <!-- ===== Color ===== -->
+    <link name="${name}_color_frame"/>
+    <joint name="${name}_color_joint" type="fixed">
+      <origin xyz="0 ${depth_to_color_y} 0" rpy="0 0 0"/>
+      <parent link="${name}_depth_frame"/>
+      <child link="${name}_color_frame"/>
+    </joint>
+
+    <link name="${name}_color_optical_frame"/>
+    <joint name="${name}_color_optical_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+      <parent link="${name}_color_frame"/>
+      <child link="${name}_color_optical_frame"/>
+    </joint>
+
+    <!-- ===== 적외선 스테레오 (실기에서 글로벌 셔터 스트림으로 쓸 수 있음) ===== -->
+    <!-- 시뮬레이션에서 영상을 만들지는 않고 프레임만 정의합니다.
+         공식 realsense2_description 과 이름을 맞춰 두는 용도입니다. -->
+    <xacro:macro name="_optical_pair" params="prefix parent x y z">
+      <link name="${prefix}_frame"/>
+      <joint name="${prefix}_joint" type="fixed">
+        <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
+        <parent link="${parent}"/>
+        <child link="${prefix}_frame"/>
+      </joint>
+      <link name="${prefix}_optical_frame"/>
+      <joint name="${prefix}_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+        <parent link="${prefix}_frame"/>
+        <child link="${prefix}_optical_frame"/>
+      </joint>
+    </xacro:macro>
+
+    <xacro:_optical_pair prefix="${name}_infra1" parent="${name}_depth_frame"
+                         x="0" y="0" z="0"/>
+    <xacro:_optical_pair prefix="${name}_infra2" parent="${name}_depth_frame"
+                         x="0" y="-0.050" z="0"/>
+
+    <!-- ===== IMU (D435i / D435if 전용) ===== -->
+    <!-- 이름은 공식 realsense2_description 을 따릅니다:
+         가속도계와 자이로가 각각 별도 프레임을 갖습니다. -->
+    <xacro:_optical_pair prefix="${name}_accel" parent="${name}_depth_frame"
+                         x="${depth_to_imu_x}" y="${depth_to_imu_y}" z="${depth_to_imu_z}"/>
+    <xacro:_optical_pair prefix="${name}_gyro" parent="${name}_depth_frame"
+                         x="${depth_to_imu_x}" y="${depth_to_imu_y}" z="${depth_to_imu_z}"/>
+
+    <!--
+      realsense2_camera 를 unite_imu_method 로 띄우면 자이로/가속도를 하나의
+      sensor_msgs/Imu 로 합쳐 /camera/imu 에 내보내는데, 그 frame_id 가
+      camera_imu_optical_frame 입니다. 시뮬레이션도 같은 이름을 씁니다.
+
+      Gazebo 의 IMU 센서는 "붙어 있는 링크의 축" 기준으로 각속도/가속도를
+      내보냅니다. 그래서 이 링크를 광학 규약(x=우, y=하, z=전방)으로 만들어
+      두어야 데이터와 frame_id 의 규약이 일치합니다. 본체 규약 링크에 붙여
+      놓고 frame_id 만 광학 프레임으로 적으면, 포인트클라우드 때와 똑같이
+      축이 90도씩 어긋납니다.
+    -->
+    <link name="${name}_imu_optical_frame"/>
+    <joint name="${name}_imu_optical_joint" type="fixed">
+      <origin xyz="${depth_to_imu_x} ${depth_to_imu_y} ${depth_to_imu_z}"
+              rpy="${-pi/2} 0 ${-pi/2}"/>
+      <parent link="${name}_depth_frame"/>
+      <child link="${name}_imu_optical_frame"/>
+    </joint>
+
+    <!-- ===================== Gazebo 센서 =====================
+
+      실제 장치처럼 스트림을 분리했습니다. 통합 rgbd_camera 를 쓰면
+      컬러와 뎁스가 한 덩어리로 묶여, 컬러를 느리게 돌리거나 끄는 것이
+      불가능합니다.
+
+      중요: 카메라 센서는 "붙어 있는 링크의 +X 방향"을 바라봅니다.
+      따라서 반드시 본체 규약 링크(_frame)에 붙이고, 발행 frame_id 는
+      <optical_frame_id> 로 광학 프레임을 지정합니다.
+      (IMU 는 반대입니다 — 아래 주석 참고)
+
+      해상도 424x240: 848x480 으로 두면 Gazebo 가 스트림들을 같은 틱에
+      렌더링하지 못해 타임스탬프가 최대 0.13초까지 어긋나고, VSLAM 이
+      크게 드리프트합니다(실측 1.2m/87도).
+    -->
+    <gazebo reference="${name}_link">
+      <material>Gazebo/DarkGrey</material>
+    </gazebo>
+
+    <!-- [depth]
+      실기의 depth 는 좌측 IR(infra1) 광학축 기준으로 나옵니다. 그래서
+      infra1 프레임과 depth 프레임이 같은 위치에 있고, 두 스트림은
+      align_depth 없이도 픽셀 단위로 정합됩니다. 여기서도 동일하게 둡니다.
+    -->
+    <gazebo reference="${name}_depth_frame">
+      <sensor name="${name}_depth" type="depth_camera">
+        <update_rate>${update_rate}</update_rate>
+        <always_on>1</always_on>
+        <visualize>false</visualize>
+        <!-- camera_info 는 토픽 경로의 부모에 붙습니다. 경로를 한 단계
+             더 두지 않으면 세 카메라가 /camera/camera_info 하나를
+             공유해 서로의 내부 파라미터를 덮어씁니다. -->
+        <topic>${name}/depth/image</topic>
+        <camera>
+          <!-- D435i 뎁스/IR 화각은 87도 x 58도 입니다 (컬러의 69도가 아님).
+               424x240 에서 수직 화각은 56.5도가 됩니다. -->
+          <horizontal_fov>${depth_hfov}</horizontal_fov>
+          <image>
+            <width>${width}</width>
+            <height>${height}</height>
+            <format>R_FLOAT32</format>
+          </image>
+          <clip>
+            <near>0.105</near>
+            <far>10.0</far>
+          </clip>
+          <optical_frame_id>${name}_depth_optical_frame</optical_frame_id>
+        </camera>
+      </sensor>
+    </gazebo>
+
+    <!-- [infra1] 좌측 적외선, 흑백
+      실기에서는 글로벌 셔터라 주행 중 회전에도 영상이 기울지 않고,
+      IR 프로젝터 패턴이 찍혀 무늬 없는 벽에서도 특징점이 나옵니다.
+      그래서 RGB 대신 이 스트림으로 VSLAM 을 돌립니다.
+      (시뮬레이터는 셔터 방식과 IR 을 모사하지 못하므로, 여기서는
+       "depth 와 완전히 정합된 흑백 영상"이라는 성질만 재현합니다.)
+    -->
+    <xacro:if value="${infra1_rate > 0}">
+    <gazebo reference="${name}_infra1_frame">
+      <sensor name="${name}_infra1" type="camera">
+        <update_rate>${infra1_rate}</update_rate>
+        <always_on>1</always_on>
+        <visualize>false</visualize>
+        <topic>${name}/infra1/image</topic>
+        <camera>
+          <!-- IR 센서는 뎁스와 같은 87도 화각 -->
+          <horizontal_fov>${depth_hfov}</horizontal_fov>
+          <image>
+            <width>${width}</width>
+            <height>${height}</height>
+            <format>L8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>20.0</far>
+          </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.005</stddev>
+          </noise>
+          <optical_frame_id>${name}_infra1_optical_frame</optical_frame_id>
+        </camera>
+      </sensor>
+    </gazebo>
+    </xacro:if>
+
+    <!-- [color]
+      VSLAM 은 infra1 을 쓰므로 컬러는 사람이 보기 위한 용도입니다.
+      렌더링 부하를 줄이려고 낮은 주기로 돌립니다.
+      아예 끄려면 color_rate 를 0 으로 두세요.
+    -->
+    <xacro:if value="${color_rate > 0}">
+      <gazebo reference="${name}_color_frame">
+        <sensor name="${name}_color" type="camera">
+          <update_rate>${color_rate}</update_rate>
+          <always_on>1</always_on>
+          <visualize>false</visualize>
+          <topic>${name}/color/image</topic>
+          <camera>
+            <!-- 컬러만 69.4도 x 42.5도 -->
+            <horizontal_fov>${color_hfov}</horizontal_fov>
+            <image>
+              <width>${width}</width>
+              <height>${height}</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.1</near>
+              <far>20.0</far>
+            </clip>
+            <optical_frame_id>${name}_color_optical_frame</optical_frame_id>
+          </camera>
+        </sensor>
+      </gazebo>
+    </xacro:if>
+
+    <!-- [IMU]
+      카메라와 달리 IMU 는 "바라보는 방향"이 없고, 붙어 있는 링크의 축
+      기준으로 각속도/가속도를 냅니다. 그래서 광학 규약 링크에 붙여야
+      실기(realsense2_camera 가 camera_imu_optical_frame 기준으로 발행)와
+      축이 일치합니다.
+    -->
+    <gazebo reference="${name}_imu_optical_frame">
+      <sensor name="${name}_imu" type="imu">
+        <update_rate>200</update_rate>
+        <always_on>1</always_on>
+        <topic>${name}/imu</topic>
+        <gz_frame_id>${name}_imu_optical_frame</gz_frame_id>
+        <imu>
+          <angular_velocity>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>0.0003</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>0.0003</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>0.0003</stddev></noise></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></z>
+          </linear_acceleration>
+        </imu>
+      </sensor>
+    </gazebo>
+
+  </xacro:macro>
+</robot>

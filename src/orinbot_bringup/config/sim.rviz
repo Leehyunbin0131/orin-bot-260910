@@ -1,0 +1,138 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /RobotModel1
+        - /PointCloud21
+      Splitter Ratio: 0.5
+    Tree Height: 620
+  - Class: rviz_common/Views
+    Name: Views
+
+Visualization Manager:
+  Class: ""
+  Name: root
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1.0
+      Plane Cell Count: 20
+      Color: 160; 160; 164
+      Line Style:
+        Value: Lines
+      Reference Frame: <Fixed Frame>
+
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Alpha: 1
+      Visual Enabled: true
+      Collision Enabled: false
+      TF Prefix: ""
+
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: false
+      Show Axes: true
+      Show Arrows: false
+      Marker Scale: 0.3
+      Update Interval: 0
+
+    - Class: rviz_default_plugins/Odometry
+      Name: Odometry
+      Enabled: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /odom
+      Keep: 100
+      Position Tolerance: 0.1
+      Angle Tolerance: 0.1
+      Shape:
+        Alpha: 1
+        Color: 255; 25; 0
+        Head Length: 0.06
+        Head Radius: 0.04
+        Shaft Length: 0.15
+        Shaft Radius: 0.015
+        Value: Arrow
+      Covariance:
+        Value: false
+
+    - Class: rviz_default_plugins/PointCloud2
+      Name: PointCloud2
+      Enabled: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /camera/depth/color/points
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: RGB8
+      Position Transformer: XYZ
+      Decay Time: 0
+      Alpha: 1
+
+    - Class: rviz_default_plugins/Image
+      Name: ColorImage
+      Enabled: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /camera/color/image_raw
+      Max Value: 1
+      Min Value: 0
+      Normalize Range: true
+
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: odom
+    Frame Rate: 30
+
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 4.0
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 0.6
+      Yaw: 2.5
+      Target Frame: <Fixed Frame>
+    Saved: ~
+
+Window Geometry:
+  Height: 900
+  Width: 1500
+  Displays:
+    collapsed: false
+  Views:
+    collapsed: false
+  ColorImage:
+    collapsed: false

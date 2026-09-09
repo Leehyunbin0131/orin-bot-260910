@@ -1,0 +1,106 @@
+<?xml version="1.0"?>
+<!--
+  Slamtec RPLIDAR A2M12 (360도 2D 레이저 스캐너).
+
+  아래 값은 A2M12 데이터시트 기준으로 넣었습니다. 실기 개체차나 펌웨어
+  설정에 따라 다를 수 있으니, 실제 장비를 받으시면 한 번 대조해 주세요.
+
+    측정 범위      0.2 ~ 12 m
+    스캔 주기      10 Hz (5~15 Hz 설정 가능)
+    샘플링         16 kHz  -> 10 Hz 에서 회전당 약 1600 점
+    각 분해능      약 0.225도
+    시야각         360도
+
+  실기 드라이버는 `rplidar_ros` (apt: ros-jazzy-rplidar-ros) 이고,
+  기본 frame_id 가 `laser`, 발행 토픽이 `/scan` 입니다. 여기서도 같은
+  이름을 써서 시뮬 -> 실기 전환 시 수정이 없도록 했습니다.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="rplidar_a2m12"
+               params="name:=laser parent update_rate:=10 samples:=1600
+                       range_min:=0.2 range_max:=12.0 *origin">
+
+    <!-- A2M12 외형: 지름 76 mm, 높이 41 mm, 무게 약 190 g -->
+    <xacro:property name="lidar_radius" value="0.038"/>
+    <xacro:property name="lidar_height" value="0.041"/>
+    <xacro:property name="lidar_mass"   value="0.19"/>
+
+    <!--
+      링크 원점 = 스캔 평면(광학 중심). 데이터시트상 바닥면에서 위로
+      약 30.8 mm 지점입니다. 마운트 좌표를 이 기준으로 잡으세요.
+    -->
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 ${lidar_height/2 - 0.0308}" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${lidar_radius}" length="${lidar_height}"/>
+        </geometry>
+        <material name="rplidar_black">
+          <color rgba="0.15 0.15 0.17 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${lidar_height/2 - 0.0308}" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${lidar_radius}" length="${lidar_height}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 ${lidar_height/2 - 0.0308}" rpy="0 0 0"/>
+        <mass value="${lidar_mass}"/>
+        <inertia
+          ixx="${(lidar_mass/12.0)*(3*lidar_radius*lidar_radius + lidar_height*lidar_height)}"
+          ixy="0.0" ixz="0.0"
+          iyy="${(lidar_mass/12.0)*(3*lidar_radius*lidar_radius + lidar_height*lidar_height)}"
+          iyz="0.0"
+          izz="${(lidar_mass/2.0)*(lidar_radius*lidar_radius)}"/>
+      </inertial>
+    </link>
+
+    <joint name="${name}_joint" type="fixed">
+      <xacro:insert_block name="origin"/>
+      <parent link="${parent}"/>
+      <child link="${name}"/>
+    </joint>
+
+    <gazebo reference="${name}">
+      <material>Gazebo/DarkGrey</material>
+
+      <!--
+        gpu_lidar 는 스캔 평면이 링크의 XY 평면이고 0도가 +X 방향입니다.
+        따라서 본체 규약 링크에 그대로 붙이면 됩니다
+        (카메라와 달리 광학 프레임 변환이 필요 없습니다).
+      -->
+      <sensor name="${name}_sensor" type="gpu_lidar">
+        <update_rate>${update_rate}</update_rate>
+        <always_on>1</always_on>
+        <visualize>false</visualize>
+        <topic>scan</topic>
+        <gz_frame_id>${name}</gz_frame_id>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>${samples}</samples>
+              <resolution>1</resolution>
+              <min_angle>${-pi}</min_angle>
+              <max_angle>${pi}</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>${range_min}</min>
+            <max>${range_max}</max>
+            <resolution>0.01</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <!-- A2 계열 거리 정확도는 실측 거리의 약 1% -->
+            <stddev>0.015</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+    </gazebo>
+
+  </xacro:macro>
+</robot>

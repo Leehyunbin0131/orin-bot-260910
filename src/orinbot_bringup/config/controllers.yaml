@@ -1,0 +1,79 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+    use_sim_time: true
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    diff_drive_controller:
+      type: diff_drive_controller/DiffDriveController
+
+diff_drive_controller:
+  ros__parameters:
+    left_wheel_names: ["left_wheel_joint"]
+    right_wheel_names: ["right_wheel_joint"]
+
+    # URDF 의 치수와 반드시 일치해야 합니다 (orinbot.urdf.xacro)
+    wheel_separation: 0.34
+    wheel_radius: 0.06
+
+    # 오도메트리 회전 캘리브레이션 배율.
+    #
+    # 측정 방법: 여러 속도로 제자리 회전시키고 휠 오도메트리가 보고한
+    # 회전량과 Gazebo 실제 자세를 비교합니다.
+    #   0.3 rad/s -> 1.1900, 0.5 -> 1.1892, 0.8 -> 1.1880
+    # 속도를 3배 바꿔도 비율이 같으므로 슬립이 아니라 계통 오차입니다.
+    # 직진은 같은 조건에서 비율 1.0000 이므로 바퀴 반지름은 정확합니다.
+    #
+    # 원인: 폭 30mm 원기둥 바퀴가 바닥과 "선"으로 닿는데, Gazebo 가 그 선
+    # 위 어디를 접촉점으로 잡는지가 하중 분포에 따라 달라집니다.
+    # 접촉점이 바깥 가장자리면 유효 윤거 0.37 m, 안쪽이면 0.31 m 로,
+    # 물리적 배치인 0.34 m 를 중심으로 +-8% 흔들립니다.
+    #
+    # 중요: 섀시 치수나 센서 배치를 바꾸면 하중 분포가 바뀌므로
+    # 반드시 다시 측정해야 합니다. 실제로 45x35x12cm 시절에는
+    # 0.9136 이었고, 40cm 큐브로 바꾼 뒤 아래 값으로 바뀌었습니다.
+    # (실기에서도 타이어 변형 때문에 같은 종류의 보정을 합니다)
+    wheel_separation_multiplier: 1.0863
+    left_wheel_radius_multiplier: 1.0
+    right_wheel_radius_multiplier: 1.0
+
+    publish_rate: 50.0
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    # odom -> base_footprint TF 는 robot_localization 의 EKF 가 발행합니다
+    # (sim.launch.py 의 ekf_node, 설정은 config/ekf.yaml).
+    # EKF 가 휠 오도메트리와 D435i IMU 를 융합하므로 여기서는 끕니다.
+    # 둘 다 켜면 같은 TF 를 두 노드가 발행해 TF 가 흔들립니다.
+    #
+    # 이 컨트롤러는 /odom 토픽만 계속 발행하고, 그것이 EKF 의 입력입니다.
+    enable_odom_tf: false
+    open_loop: false
+    position_feedback: true
+    velocity_rolling_window_size: 10
+
+    pose_covariance_diagonal:  [0.001, 0.001, 1e6, 1e6, 1e6, 0.01]
+    twist_covariance_diagonal: [0.001, 0.001, 1e6, 1e6, 1e6, 0.01]
+
+    # 속도/가속도 제한
+    linear:
+      x:
+        has_velocity_limits: true
+        has_acceleration_limits: true
+        max_velocity: 1.0        # m/s
+        min_velocity: -0.5
+        max_acceleration: 1.0    # m/s^2
+        min_acceleration: -1.0
+    angular:
+      z:
+        has_velocity_limits: true
+        has_acceleration_limits: true
+        max_velocity: 2.0        # rad/s
+        min_velocity: -2.0
+        max_acceleration: 2.0    # rad/s^2
+        min_acceleration: -2.0
+
+joint_state_broadcaster:
+  ros__parameters:
+    use_sim_time: true

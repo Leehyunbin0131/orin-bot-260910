@@ -1,0 +1,556 @@
+# Nav2 설정 — orinbot (차동구동, D435i + RPLIDAR A2M12)
+#
+# Nav2 기본값에서 바꾼 핵심:
+#   - robot_base_frame: base_link -> base_footprint
+#   - robot_radius 대신 footprint (400x400mm 사각) — 원 근사는 좁은 통로를 막음
+#   - 관측원: /scan (RPLIDAR, 평면 0.49 m) + /camera/depth/points (D435i, 15도 하향)
+#   - 전역 플래너는 SmacPlanner2D (NavFn 은 벽에서 떨어뜨릴 손잡이가 없음)
+#   - enable_stamped_cmd_vel: true  (diff_drive_controller 가 TwistStamped 를 받음)
+#   - 속도 상한을 controllers.yaml 의 제한 안쪽으로 맞춤
+#
+# AMCL / map_server 는 쓰지 않습니다. map -> odom 변환과 /map 점유격자는
+# RTAB-Map 이 제공합니다.
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    wait_for_service_timeout: 1000
+    action_server_result_timeout: 900.0
+    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+    navigate_through_poses:
+      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
+    error_code_names:
+      - compute_path_error_code
+      - follow_path_error_code
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    costmap_update_timeout: 0.30
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    # diff_drive_controller 가 TwistStamped 를 구독하므로 필수
+    enable_stamped_cmd_vel: true
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    use_realtime_priority: false
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      # "이 시간 안에 이 거리만큼 못 움직이면 실패로 본다".
+      # 이 값이 곧 "막혔다고 깨닫는 데 걸리는 시간"입니다. 복구 행동은
+      # 이게 울려야 시작되고, 복구 항목마다 이 시간이 다시 흐릅니다.
+      #
+      # 20초는 카메라만 쓰던 시절(360도 라이다가 없어 재계획이 잦던 때)의
+      # 값이었습니다. 그대로 두면 막힌 뒤 첫 후진까지 60~100초가 걸립니다.
+      # 라이다가 360도를 보는 지금은 재계획이 안정적이라 짧게 가도 됩니다.
+      required_movement_radius: 0.4
+      movement_time_allowance: 8.0
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.20
+      yaw_goal_tolerance: 0.25
+
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+      # ================================================================
+      # Nav2 순정값을 기준으로 하고, 이 로봇에 근거가 있는 항목만 바꿉니다.
+      #
+      # 한 번 크게 틀렸던 부분이라 기록을 남깁니다. 아래 "튜닝"을 했다가
+      # 로봇이 200초 동안 2.7m 밖에 못 갔습니다(평균 0.014 m/s):
+      #   - 비평자 가중치를 건드림(PathAlign 14->10, PreferForward 5->8,
+      #     TwirlingCritic 10.0 추가)  -> 개활지에서도 서행
+      #   - 샘플 수와 탐색 폭을 줄임(batch 2000->1000, wz_std 0.4->0.3,
+      #     ax_max 3.0->1.0)          -> 좁은 문 앞에서 정지
+      # 실측 비교(같은 문, 같은 목표):
+      #   튜닝판  : 200초 timeout, 통과 실패
+      #   순정판  : 13초, 0.40 m/s 직진 통과, 각속도 진동 없음
+      #
+      # 교훈: MPPI 비평자 가중치는 서로 물려 있어서 하나만 올리면
+      # 다른 항이 상쇄되며 "정지"가 최적해가 됩니다. 증상(진동 등)이
+      # 보여도 가중치부터 만지지 말고 코스트맵/footprint 쪽을 먼저 볼 것.
+      # ================================================================
+      time_steps: 56
+      model_dt: 0.05
+      batch_size: 2000
+      ax_max: 3.0
+      ax_min: -3.0
+      ay_max: 3.0
+      az_max: 3.5
+      vx_std: 0.2
+      vy_std: 0.2
+      wz_std: 0.4
+      # 아래 4개만 이 로봇 값입니다. controllers.yaml 의 제한
+      # (1.0 m/s, 2.0 rad/s) 안쪽이고, 카메라가 앞만 보므로
+      # 후진은 느리게 제한합니다.
+      vx_max: 0.40
+      vx_min: -0.20
+      vy_max: 0.0
+      wz_max: 1.20
+      iteration_count: 1
+      prune_distance: 1.7
+      # 카메라 오도메트리는 영상 지연 때문에 TF 가 40~70ms 뒤처집니다.
+      # 순정 0.1 로 두면 map->odom 조회가 미래 외삽을 요구해 목표가 취소됩니다.
+      transform_tolerance: 0.3
+      temperature: 0.3
+      gamma: 0.015
+      motion_model: "DiffDrive"
+      visualize: false
+      regenerate_noises: false
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
+                "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
+                "PreferForwardCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      # === threshold_to_consider — 이 아래 값들만 순정이 아닙니다 ===
+      # 비평자를 켜고 끄는 판정이 **목표까지의 직선거리**입니다. 남은 경로
+      # 길이를 전혀 보지 않습니다 (mppi/tools/utils.hpp:242).
+      #
+      # 그래서 **벽 하나 너머에 목표가 있으면**(직선은 가까운데 경로는 크게
+      # 우회) 경로 추종 비평자가 전부 꺼지고 목표 쪽 직선 인력만 남아 로봇이
+      # 벽으로 밀립니다. 환경의 셀 간격보다 문턱이 크면 어느 목표든 늘 문턱
+      # 안이라 이 상태가 상시화됩니다 (미로 셀 간격 0.85 m).
+      #
+      # 경로 추종은 목표 허용오차(xy_goal_tolerance 0.20) 언저리까지만 살아
+      # 있으면 되므로 문턱을 그 바로 위로 둡니다. 직선거리 판정 자체는
+      # 그대로라 원리적 해결은 아니고, 남는 구간은 이미 도착 판정 범위입니다.
+      # 배경은 docs/ros2-lessons.md 3장.
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        # 클수록 "목표 쪽 직선 인력"이 먼 거리에서부터 켜집니다.
+        # 벽 너머 목표에서 로봇을 벽으로 미는 힘이 이것입니다 (순정 1.4).
+        threshold_to_consider: 0.5
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        # 로봇을 원으로 근사하지 않고 실제 사각(0.4x0.4)으로 충돌 검사합니다.
+        #
+        # false 로 두면 Nav2 는 "비용 253(내접반경 이내) 셀에 중심이 닿으면
+        # 충돌"로 판단합니다. 즉 폭 W 통로에서 로봇 중심이 움직일 수 있는
+        # 폭이 W - 2*내접반경(0.40) 으로 줄어듭니다. 폭 0.55 m 통로면
+        # 겨우 0.15 m 밴드 안을 지나야 해서 실질적으로 통과 불가입니다.
+        #
+        # 실측 (폭 0.90/0.70/0.55 m, 깊이 0.60 m 복도):
+        #   false : 28초 / 23초 / 실패(입구 0.8m 앞에서 정지)
+        #   true  : 28초 / 26초 / 50초 통과
+        # 연산 부담도 없었습니다 (controller_server 루프 초과 2회 -> 0회).
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+        trajectory_point_step: 2
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        # 0.5 -> 0.25. 가중치 14.0 으로 가장 강한 비평자라, 이게 꺼지면
+        # 경로를 따라가게 하는 힘이 사실상 사라집니다. (위 설명 참고)
+        threshold_to_consider: 0.25
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        # 1.4 -> 0.3. 셀 간격 0.85 m 인 미로에서 1.4 m 는 주변 8칸을 전부
+        # 덮어, 목표가 이웃 칸에 있기만 하면 경로 추종이 꺼졌습니다.
+        threshold_to_consider: 0.3
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: True
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 4
+      height: 4
+      resolution: 0.02
+      # 원 근사(robot_radius) 대신 실제 사각 형상을 씁니다.
+      #
+      # robot_radius: 0.30 으로 두면 Nav2 가 로봇을 지름 60cm 원으로 취급해
+      # 60cm 미만 통로를 전부 거부합니다. 실제 로봇은 40cm 폭이라
+      # 50cm 통로도 지나갈 수 있습니다.
+      # footprint 를 주면 내접 반경 0.20 / 외접 반경 0.283 을 Nav2 가
+      # 직접 계산해서 씁니다.
+      footprint: "[[0.20, 0.20], [0.20, -0.20], [-0.20, -0.20], [-0.20, 0.20]]"
+      transform_tolerance: 0.3
+      plugins: ["obstacle_layer", "stvl_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        # 라이다 전용입니다. 카메라는 아래 stvl_layer 가 담당합니다.
+        #   scan : RPLIDAR A2M12 (360도, 12m) — 주 관측원.
+        #          스캔 평면이 지면 0.49m 라 그보다 낮은 장애물은 못 봅니다.
+        #          그 아래를 보는 것이 D435i 의 역할입니다.
+        observation_sources: scan
+        scan:
+          topic: /scan
+          sensor_frame: laser
+          min_obstacle_height: 0.0
+          max_obstacle_height: 1.5
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 12.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 10.0
+          obstacle_min_range: 0.0
+      stvl_layer:
+        # 시공간 복셀 레이어 (OpenVDB 기반 3D 복셀 + 시간 감쇠).
+        #
+        # 왜 ObstacleLayer 대신 이걸 카메라에 쓰는가:
+        #   ObstacleLayer 는 2D 격자라 "지운다"는 것이 광선 하나로 셀을
+        #   비우는 것뿐입니다. D435i 는 화각이 87x58도로 좁고 15도 아래를
+        #   보므로, 로봇이 회전하면 방금 본 영역이 시야에서 사라지고
+        #   지울 기회가 없어 흔적이 남습니다.
+        #   STVL 은 각 복셀에 관측 시각을 달아 voxel_decay 초가 지나면
+        #   다시 보이지 않아도 스스로 사라지게 합니다.
+        #
+        # 라이다(/scan)는 그대로 ObstacleLayer 에 둡니다. 360도로 항상
+        # 전방위를 보므로 광선 기반 소거가 정상 동작하고, 2D 라 더 쌉니다.
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
+        enabled: true
+        voxel_decay: 10.0        # 재관측 없으면 10초 뒤 소멸 (초)
+        decay_model: 0           # 0=선형, 1=지수, -1=영구
+        voxel_size: 0.05
+        track_unknown_space: true
+        mark_threshold: 0
+        update_footprint_enabled: true
+        combination_method: 1
+        origin_z: 0.0
+        publish_voxel_map: true  # RViz 에서 /local_costmap/stvl_layer/voxel_grid 로 확인
+        transform_tolerance: 0.3
+        mapping_mode: false
+        map_save_duration: 60.0
+        observation_sources: camera_cloud
+        camera_cloud:
+          data_type: PointCloud2
+          topic: /camera/depth/points
+          marking: true
+          clearing: true
+          obstacle_range: 2.0
+          # 카메라가 15도 아래를 보므로 바닥이 통째로 들어옵니다.
+          # 이 높이 아래를 잘라 바닥을 걸러내고, 그 위로 튀어나온 것만 남깁니다.
+          #
+          # 이 값이 곧 "탐지 가능한 최소 장애물 높이"입니다. 3cm 로 두면
+          # 3cm 미만 장애물은 원리적으로 못 봅니다. 낮출수록 더 작은 것을
+          # 보지만 바닥 잡음이 장애물로 새어 들어옵니다.
+          #
+          # 시뮬레이션 실측(15도 하향, 0.4~2.5 m): 바닥 점 높이가 편차
+          # ±0.001 m 로 매우 일정해 3 cm 면 넉넉합니다.
+          # 실기에서는 D435i 뎁스 잡음이 거리 제곱에 비례해 커지므로
+          # (2 m 에서 1~2 cm) 평평한 바닥을 보며 다시 재고 조정하세요.
+          # 그래서 아래 obstacle_range 를 2 m 로 묶어 둡니다.
+          min_obstacle_height: 0.03
+          max_obstacle_height: 1.5
+          min_z: 0.03
+          max_z: 1.5
+          expected_update_rate: 0.0
+          observation_persistence: 0.0
+          inf_is_valid: false
+          voxel_filter: false
+          clear_after_reading: true
+          # D435i 뎁스 화각. 424x240 렌더 기준 87 x 56.5도
+          # (58도는 데이터시트 값). STVL 은 이 절두체 안쪽을
+          # "지금 보고 있는 영역"으로 보고 소거 판단에 씁니다.
+          horizontal_fov_angle: 1.518
+          vertical_fov_angle: 1.012
+          decay_acceleration: 5.0
+          model_type: 0          # 0=뎁스카메라(절두체), 1=3D 라이다
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # inflation_radius 는 "얼마나 멀리까지 비용을 퍼뜨리나",
+        # cost_scaling_factor 는 "거리에 따라 얼마나 빨리 떨어지나" 입니다.
+        # 비용식: 252 * exp(-cost_scaling_factor * (거리 - 내접반경 0.20))
+        #
+        # 반경은 0.40 을 유지합니다. 0.55 로 두면 내접반경의 2.75배라
+        # 폭 1.1m 이하 통로가 통째로 덮여 "못 지나가는 곳"이 됩니다.
+        #
+        # 감쇠는 가파르게 둡니다. 완만하게(2.0) 두면 벽에서 떨어져도 비용이
+        # 잘 안 내려가 좁은 통로 중앙에도 저비용 지점이 안 생깁니다.
+        # 폭 0.80m 문 단면 실측 (같은 지도, 런타임 변경으로 직접 비교):
+        #        y=0.00   y=+-0.10   y=+-0.15
+        #   2.0 :   74      80/90      89/90
+        #  10.0 :   24      38/65      62/65
+        # 주행 성적도 같거나 낫습니다 (문 통과 20/14초 -> 20/13초,
+        # 각속도 부호 반전 3/7회 -> 2/3회).
+        cost_scaling_factor: 10.0
+        inflation_radius: 0.40
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: True
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_footprint
+      # 지역 코스트맵과 동일하게 실제 사각 형상 사용
+      footprint: "[[0.20, 0.20], [0.20, -0.20], [-0.20, -0.20], [-0.20, 0.20]]"
+      resolution: 0.02
+      transform_tolerance: 0.3
+      track_unknown_space: true
+      plugins: ["static_layer", "obstacle_layer", "stvl_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        # RTAB-Map 이 발행하는 점유격자
+        map_topic: /map
+        map_subscribe_transient_local: True
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        # 라이다 전용입니다. 카메라는 아래 stvl_layer 가 담당합니다.
+        #   scan : RPLIDAR A2M12 (360도, 12m) — 주 관측원.
+        #          스캔 평면이 지면 0.49m 라 그보다 낮은 장애물은 못 봅니다.
+        #          그 아래를 보는 것이 D435i 의 역할입니다.
+        observation_sources: scan
+        scan:
+          topic: /scan
+          sensor_frame: laser
+          min_obstacle_height: 0.0
+          max_obstacle_height: 1.5
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 12.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 10.0
+          obstacle_min_range: 0.0
+      stvl_layer:
+        # 시공간 복셀 레이어 (OpenVDB 기반 3D 복셀 + 시간 감쇠).
+        #
+        # 왜 ObstacleLayer 대신 이걸 카메라에 쓰는가:
+        #   ObstacleLayer 는 2D 격자라 "지운다"는 것이 광선 하나로 셀을
+        #   비우는 것뿐입니다. D435i 는 화각이 87x58도로 좁고 15도 아래를
+        #   보므로, 로봇이 회전하면 방금 본 영역이 시야에서 사라지고
+        #   지울 기회가 없어 흔적이 남습니다.
+        #   STVL 은 각 복셀에 관측 시각을 달아 voxel_decay 초가 지나면
+        #   다시 보이지 않아도 스스로 사라지게 합니다.
+        #
+        # 라이다(/scan)는 그대로 ObstacleLayer 에 둡니다. 360도로 항상
+        # 전방위를 보므로 광선 기반 소거가 정상 동작하고, 2D 라 더 쌉니다.
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
+        enabled: true
+        voxel_decay: 10.0        # 재관측 없으면 10초 뒤 소멸 (초)
+        decay_model: 0           # 0=선형, 1=지수, -1=영구
+        voxel_size: 0.05
+        track_unknown_space: true
+        mark_threshold: 0
+        update_footprint_enabled: true
+        combination_method: 1
+        origin_z: 0.0
+        publish_voxel_map: true  # RViz 에서 /local_costmap/stvl_layer/voxel_grid 로 확인
+        transform_tolerance: 0.3
+        mapping_mode: false
+        map_save_duration: 60.0
+        observation_sources: camera_cloud
+        camera_cloud:
+          data_type: PointCloud2
+          topic: /camera/depth/points
+          marking: true
+          clearing: true
+          obstacle_range: 2.0
+          # 카메라가 15도 아래를 보므로 바닥이 통째로 들어옵니다.
+          # 이 높이 아래를 잘라 바닥을 걸러내고, 그 위로 튀어나온 것만 남깁니다.
+          #
+          # 이 값이 곧 "탐지 가능한 최소 장애물 높이"입니다. 3cm 로 두면
+          # 3cm 미만 장애물은 원리적으로 못 봅니다. 낮출수록 더 작은 것을
+          # 보지만 바닥 잡음이 장애물로 새어 들어옵니다.
+          #
+          # 시뮬레이션 실측(15도 하향, 0.4~2.5 m): 바닥 점 높이가 편차
+          # ±0.001 m 로 매우 일정해 3 cm 면 넉넉합니다.
+          # 실기에서는 D435i 뎁스 잡음이 거리 제곱에 비례해 커지므로
+          # (2 m 에서 1~2 cm) 평평한 바닥을 보며 다시 재고 조정하세요.
+          # 그래서 아래 obstacle_range 를 2 m 로 묶어 둡니다.
+          min_obstacle_height: 0.03
+          max_obstacle_height: 1.5
+          min_z: 0.03
+          max_z: 1.5
+          expected_update_rate: 0.0
+          observation_persistence: 0.0
+          inf_is_valid: false
+          voxel_filter: false
+          clear_after_reading: true
+          # D435i 뎁스 화각. 424x240 렌더 기준 87 x 56.5도
+          # (58도는 데이터시트 값). STVL 은 이 절두체 안쪽을
+          # "지금 보고 있는 영역"으로 보고 소거 판단에 씁니다.
+          horizontal_fov_angle: 1.518
+          vertical_fov_angle: 1.012
+          decay_acceleration: 5.0
+          model_type: 0          # 0=뎁스카메라(절두체), 1=3D 라이다
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # inflation_radius 는 "얼마나 멀리까지 비용을 퍼뜨리나",
+        # cost_scaling_factor 는 "거리에 따라 얼마나 빨리 떨어지나" 입니다.
+        # 비용식: 252 * exp(-cost_scaling_factor * (거리 - 내접반경 0.20))
+        #
+        # 반경은 0.40 을 유지합니다. 0.55 로 두면 내접반경의 2.75배라
+        # 폭 1.1m 이하 통로가 통째로 덮여 "못 지나가는 곳"이 됩니다.
+        #
+        # 감쇠는 가파르게 둡니다. 완만하게(2.0) 두면 벽에서 떨어져도 비용이
+        # 잘 안 내려가 좁은 통로 중앙에도 저비용 지점이 안 생깁니다.
+        # 폭 0.80m 문 단면 실측 (같은 지도, 런타임 변경으로 직접 비교):
+        #        y=0.00   y=+-0.10   y=+-0.15
+        #   2.0 :   74      80/90      89/90
+        #  10.0 :   24      38/65      62/65
+        # 주행 성적도 같거나 낫습니다 (문 통과 20/14초 -> 20/13초,
+        # 각속도 부호 반전 3/7회 -> 2/3회).
+        cost_scaling_factor: 10.0
+        inflation_radius: 0.40
+      always_send_full_costmap: True
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 20.0
+    # 두 개를 등록해 두고 BT 의 PlannerSelector 로 갈아끼울 수 있게 합니다.
+    # (트리에 PlannerSelector 노드가 이미 있고 default_planner="GridBased")
+    planner_plugins: ["GridBased", "NavFn"]
+    costmap_update_timeout: 1.0
+
+    # === 왜 NavFn 대신 Smac2D 인가 (2026-08-02) ===
+    # 목표: 경로가 벽에서 최대한 떨어지게 하기.
+    #
+    # NavFn 은 그걸 조절할 수단이 **없습니다**. 비용 변환이 컴파일 상수입니다
+    # (nav2_navfn_planner/navfn.hpp):
+    #     #define COST_NEUTRAL 50
+    #     #define COST_FACTOR  0.8      // 비용 = 50 + 0.8 * 코스트맵값
+    # 팽창 파라미터로 우회해 보려 했으나 효과가 없습니다 — 통로 0.85 m 에서
+    # 중앙과 10 cm 편심의 비용 차이가 cost_scaling_factor 10 일 때 45.7,
+    # 3 일 때 45.0 으로 사실상 같습니다. 중앙 선호 압력이 안 바뀝니다.
+    #
+    # SmacPlanner2D 에는 `cost_travel_multiplier` 가 있습니다. A* 탐색이
+    # 비용 높은(=벽에 가까운) 셀을 얼마나 기피할지 직접 정하는 값이라,
+    # 이게 원하던 손잡이입니다.
+    GridBased:
+      plugin: "nav2_smac_planner::SmacPlanner2D"
+      tolerance: 0.5                    # NavFn 과 같게 두어 비교 가능하게
+      allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      # 기본 2.0 -> 4.0. 클수록 벽에서 멀어지지만 경로가 길어지고
+      # 탐색 시간도 늘어납니다. 좁은 통로에서는 어차피 중앙밖에 없으므로
+      # 경로 길이 손해는 코너에서만 생깁니다.
+      cost_travel_multiplier: 4.0
+      # 코스트맵을 줄여 탐색을 빠르게 하는 옵션인데, 통로 폭 0.85 m 에
+      # 격자 0.05 m 라 해상도를 낮추면 통로가 사라집니다. 끄고 씁니다.
+      downsample_costmap: false
+      use_final_approach_orientation: false
+
+    # 에스컬레이션용 예비. 실패가 반복될 때 PlannerSelector 로 이쪽을
+    # 지정하면 전혀 다른 탐색(퍼텐셜 하강)으로 다시 시도할 수 있습니다.
+    NavFn:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.5
+      use_astar: false
+      allow_unknown: true
+
+smoother_server:
+  ros__parameters:
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: True
+
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    # behavior_server 는 항상 TwistStamped 로 발행하므로 별도 설정이 없습니다
+    # 기본 BT 가 호출하는 것만 남깁니다 (drive_on_heading, assisted_teleop 미사용)
+    behavior_plugins: ["spin", "backup", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors::AssistedTeleop"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.3
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 2.0
+
+waypoint_follower:
+  ros__parameters:
+    loop_rate: 20
+    stop_on_failure: false
+    action_server_result_timeout: 900.0
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 200
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    # false 로 두면 입력 명령의 시각을 그대로 재발행해서,
+    # diff_drive_controller 가 "0.5초보다 오래된 명령"이라며 무시합니다.
+    stamp_smoothed_velocity_with_smoothing_time: True
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    enable_stamped_cmd_vel: true
+    max_velocity: [0.40, 0.0, 1.20]
+    min_velocity: [-0.20, 0.0, -1.20]
+    max_accel: [1.0, 0.0, 2.0]
+    max_decel: [-1.0, 0.0, -2.0]
+    odom_topic: "/odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0

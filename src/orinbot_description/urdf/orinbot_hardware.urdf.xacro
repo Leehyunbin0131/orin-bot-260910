@@ -1,0 +1,182 @@
+<?xml version="1.0"?>
+<!-- Real robot geometry. Measurements come from orinbot_hardware/config/hardware.yaml.
+     No simulated sensors, guessed inertias, docking brackets or hardware plugins here.
+     Unmeasured wheel width/trail use preview-only approximations, not collision geometry. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="orinbot">
+  <xacro:arg name="profile_size" default="0.020"/>
+  <xacro:arg name="body_length" default="0.44"/>
+  <xacro:arg name="body_width" default="0.44"/>
+  <xacro:arg name="body_height" default="0.44"/>
+  <xacro:arg name="ground_clearance" default="0.058"/>
+  <xacro:arg name="drive_axle_x" default="0.14"/>
+  <xacro:arg name="wheel_radius" default="0.0325"/>
+  <xacro:arg name="wheel_separation" default="0.44"/>
+  <xacro:arg name="wheel_width" default="0"/>
+  <xacro:arg name="caster_x" default="-0.21"/>
+  <xacro:arg name="caster_separation" default="0.26"/>
+  <xacro:arg name="caster_radius" default="0.0162"/>
+  <xacro:arg name="caster_width" default="0.0142"/>
+  <xacro:arg name="caster_height" default="0.042"/>
+  <xacro:arg name="caster_plate_length" default="0.032"/>
+  <xacro:arg name="caster_plate_width" default="0.038"/>
+  <xacro:arg name="caster_trail" default="0.01"/>
+  <xacro:arg name="caster_trail_measured" default="false"/>
+
+  <xacro:property name="length" value="${float('$(arg body_length)')}"/>
+  <xacro:property name="width" value="${float('$(arg body_width)')}"/>
+  <xacro:property name="height" value="${float('$(arg body_height)')}"/>
+  <xacro:property name="profile" value="${float('$(arg profile_size)')}"/>
+  <xacro:property name="body_z" value="${float('$(arg ground_clearance)') + height/2}"/>
+  <xacro:property name="axle_x" value="${float('$(arg drive_axle_x)')}"/>
+  <xacro:property name="radius" value="${float('$(arg wheel_radius)')}"/>
+  <xacro:property name="track" value="${float('$(arg wheel_separation)')}"/>
+  <xacro:property name="tire_width" value="${float('$(arg wheel_width)')}"/>
+  <xacro:property name="visual_tire_width" value="${tire_width if tire_width > 0 else 0.03}"/>
+  <xacro:property name="caster_r" value="${float('$(arg caster_radius)')}"/>
+  <xacro:property name="caster_h" value="${float('$(arg caster_height)')}"/>
+  <xacro:property name="spacer_h" value="${float('$(arg ground_clearance)')-caster_h}"/>
+  <xacro:property name="trail" value="${float('$(arg caster_trail)')}"/>
+  <xacro:property name="fork_h" value="${caster_h-0.002-caster_r}"/>
+
+  <material name="body_grey"><color rgba="0.72 0.76 0.82 1"/></material>
+  <material name="tire_black"><color rgba="0.08 0.08 0.08 1"/></material>
+  <material name="caster_metal"><color rgba="0.65 0.69 0.74 1"/></material>
+  <material name="provisional"><color rgba="0.95 0.58 0.12 0.8"/></material>
+  <!-- Differential-drive kinematics are referenced to the drive axle midpoint. -->
+  <link name="base_footprint"/>
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="${-axle_x} 0 ${body_z}" rpy="0 0 0"/>
+  </joint>
+  <!-- Solid rectangular envelopes of 2020 extrusions; T-slots/fasteners omitted. -->
+  <xacro:macro name="profile_bar" params="x y z sx sy sz">
+    <visual>
+      <origin xyz="${x} ${y} ${z}"/>
+      <geometry><box size="${sx} ${sy} ${sz}"/></geometry>
+      <material name="body_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="${x} ${y} ${z}"/>
+      <geometry><box size="${sx} ${sy} ${sz}"/></geometry>
+    </collision>
+  </xacro:macro>
+  <xacro:macro name="frame_corner" params="xsign ysign">
+    <xacro:profile_bar x="${xsign*(length-profile)/2}" y="${ysign*(width-profile)/2}" z="0"
+                       sx="${profile}" sy="${profile}" sz="${height}"/>
+  </xacro:macro>
+  <xacro:macro name="frame_level" params="zsign">
+    <xacro:profile_bar x="0" y="${(width-profile)/2}" z="${zsign*(height-profile)/2}"
+                       sx="${length-2*profile}" sy="${profile}" sz="${profile}"/>
+    <xacro:profile_bar x="0" y="${-(width-profile)/2}" z="${zsign*(height-profile)/2}"
+                       sx="${length-2*profile}" sy="${profile}" sz="${profile}"/>
+    <xacro:profile_bar x="${(length-profile)/2}" y="0" z="${zsign*(height-profile)/2}"
+                       sx="${profile}" sy="${width-2*profile}" sz="${profile}"/>
+    <xacro:profile_bar x="${-(length-profile)/2}" y="0" z="${zsign*(height-profile)/2}"
+                       sx="${profile}" sy="${width-2*profile}" sz="${profile}"/>
+  </xacro:macro>
+  <link name="base_link">
+    <xacro:frame_corner xsign="1" ysign="1"/>
+    <xacro:frame_corner xsign="1" ysign="-1"/>
+    <xacro:frame_corner xsign="-1" ysign="1"/>
+    <xacro:frame_corner xsign="-1" ysign="-1"/>
+    <xacro:frame_level zsign="1"/>
+    <xacro:frame_level zsign="-1"/>
+  </link>
+
+  <xacro:macro name="drive_wheel" params="side sign">
+    <!-- Mounting reference on the side extrusion, distinct from the wheel shaft. -->
+    <link name="${side}_motor_mount"/>
+    <joint name="${side}_motor_mount_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${side}_motor_mount"/>
+      <origin xyz="${axle_x} ${sign*(width-profile)/2} ${-(height-profile)/2}"/>
+    </joint>
+    <link name="${side}_wheel_link">
+      <visual>
+        <origin rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${radius}" length="${visual_tire_width}"/></geometry>
+        <xacro:if value="${tire_width > 0}"><material name="tire_black"/></xacro:if>
+        <xacro:unless value="${tire_width > 0}"><material name="provisional"/></xacro:unless>
+      </visual>
+      <xacro:if value="${tire_width > 0}">
+        <collision>
+          <origin rpy="${pi/2} 0 0"/>
+          <geometry><cylinder radius="${radius}" length="${tire_width}"/></geometry>
+        </collision>
+      </xacro:if>
+    </link>
+    <joint name="${side}_wheel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${side}_wheel_link"/>
+      <origin xyz="${axle_x} ${sign*track/2} ${radius-body_z}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+  <xacro:drive_wheel side="left" sign="1"/>
+  <xacro:drive_wheel side="right" sign="-1"/>
+
+  <!-- Ground projections of the two rear swivel axes, NOT caster wheel centers. -->
+  <xacro:macro name="caster_reference" params="side sign">
+    <link name="rear_${side}_caster_ground"/>
+    <joint name="rear_${side}_caster_reference_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="rear_${side}_caster_ground"/>
+      <origin xyz="$(arg caster_x) ${sign*float('$(arg caster_separation)')/2} ${-body_z}" rpy="0 0 0"/>
+    </joint>
+    <!-- Fixed nominal caster orientation for visualization; passive swivel is not sensed.
+         Plate thickness (2mm) and spacer diameter (12mm) are schematic only. -->
+    <link name="rear_${side}_caster_mount">
+      <visual>
+        <origin xyz="0 0 -0.001"/>
+        <geometry><box size="$(arg caster_plate_length) $(arg caster_plate_width) 0.002"/></geometry>
+        <material name="caster_metal"/>
+      </visual>
+      <xacro:if value="${spacer_h > 0}">
+        <visual>
+          <origin xyz="0 0 ${spacer_h/2}"/>
+          <geometry><cylinder radius="0.006" length="${spacer_h}"/></geometry>
+          <material name="provisional"/>
+        </visual>
+      </xacro:if>
+      <!-- Schematic fork arms joining the plate to the wheel axle. -->
+      <visual>
+        <origin xyz="${-trail/2} ${float('$(arg caster_width)')/2+0.0015} ${(-0.002+caster_r-caster_h)/2}"
+                rpy="0 ${atan2(trail, fork_h)} 0"/>
+        <geometry><box size="0.003 0.002 ${sqrt(trail*trail+fork_h*fork_h)}"/></geometry>
+        <material name="caster_metal"/>
+      </visual>
+      <visual>
+        <origin xyz="${-trail/2} ${-float('$(arg caster_width)')/2-0.0015} ${(-0.002+caster_r-caster_h)/2}"
+                rpy="0 ${atan2(trail, fork_h)} 0"/>
+        <geometry><box size="0.003 0.002 ${sqrt(trail*trail+fork_h*fork_h)}"/></geometry>
+        <material name="caster_metal"/>
+      </visual>
+    </link>
+    <joint name="rear_${side}_caster_mount_joint" type="fixed">
+      <parent link="rear_${side}_caster_ground"/>
+      <child link="rear_${side}_caster_mount"/>
+      <origin xyz="0 0 ${caster_h}"/>
+    </joint>
+    <link name="rear_${side}_caster_wheel_link">
+      <visual>
+        <origin rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${caster_r}" length="$(arg caster_width)"/></geometry>
+        <material name="tire_black"/>
+      </visual>
+      <xacro:if value="$(arg caster_trail_measured)">
+        <collision>
+          <origin rpy="${pi/2} 0 0"/>
+          <geometry><cylinder radius="${caster_r}" length="$(arg caster_width)"/></geometry>
+        </collision>
+      </xacro:if>
+    </link>
+    <joint name="rear_${side}_caster_wheel_joint" type="fixed">
+      <parent link="rear_${side}_caster_mount"/>
+      <child link="rear_${side}_caster_wheel_link"/>
+      <origin xyz="${-float('$(arg caster_trail)')} 0 ${caster_r-caster_h}"/>
+    </joint>
+  </xacro:macro>
+  <xacro:caster_reference side="left" sign="1"/>
+  <xacro:caster_reference side="right" sign="-1"/>
+</robot>

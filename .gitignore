@@ -1,0 +1,28 @@
+# Colcon outputs and local robot data
+/build/
+/install/
+/log/
+/maps/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+.codex/
+.agents/
+.vscode/
+.idea/
+.DS_Store
+*.pem
+*.key
+*.bag
+*.db3
+*.mcap

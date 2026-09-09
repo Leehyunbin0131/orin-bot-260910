@@ -1,0 +1,9 @@
+# Set exactly one field. Positive distance = forward, positive angle = left/CCW.
+# distance: 1..200 cm in magnitude; angle: 1..360 degrees in magnitude.
+float64 distance_cm
+float64 angle_deg
+---
+# Acceptance only; query /robot/status for completion. No request queue.
+bool accepted
+uint64 command_id
+string message

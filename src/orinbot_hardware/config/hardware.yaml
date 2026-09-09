@@ -1,0 +1,51 @@
+# 길이 단위 m. 본체 배치·간격은 2026-09-09 사용자 확인값.
+# 구동륜 지름 6.5cm는 2026-09-09 사용자 재확인.
+wheel_radius: 0.0325
+wheel_separation: 0.44
+# 2020 프로파일(20mm), 내부 가로·세로·높이 각각 40cm → 외부 44cm.
+profile_size: 0.020
+body_length: 0.44
+body_width: 0.44
+body_height: 0.44
+ground_clearance: 0.058
+# 본체 중심 기준 x=전방, y=좌측. base_footprint는 전방 구동축의 지면 투영점.
+drive_axle_x: 0.14
+# 2026-09-09 사용자 요청: 장착점은 2020 프로파일 중심선에 정렬한 근사값.
+caster_x: -0.21
+# 후방 프로파일 가운데에서 캐스터 장착축 좌우 각각 13cm.
+caster_separation: 0.26
+# 미확인 값은 null. 구동륜 폭은 화면에서만 기존 3cm로 임시 표시합니다.
+wheel_width: null
+caster_radius: 0.0162
+caster_width: 0.0142
+caster_height: 0.042
+caster_plate_length: 0.032
+caster_plate_width: 0.038
+# 캐스터 명목 정방향 시각화에서는 미확인 trail을 1cm로 단순화합니다.
+caster_trail: null
+# 목표 통신 설정. 실제 저장된 값은 probe_motors.py로 확인해야 합니다.
+motor_port: /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBIN9M3-if00-port0
+baud_rate: 57600
+left_id: 1
+right_id: 2
+# 바깥쪽을 향한 모터 축, Drive Mode=0인 대칭 장착을 가정한 초기값.
+# 바퀴를 띄우고 저속으로 방향을 확인한 뒤 수정하세요. EEPROM 방향은 변경하지 않음.
+left_direction: 1
+right_direction: -1
+lidar_port: /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_3915548a17a0164cb877f2ab2ade5994-if00-port0
+lidar_baud_rate: 256000
+# 센서 x/y는 본체 중심의 지면 투영점 기준, z는 바닥에서의 높이.
+# 런치가 x에서 drive_axle_x를 빼서 base_footprint 기준으로 변환합니다.
+# 2026-09-07 실측: 라이다 스캔면 52cm / 카메라 렌즈 중심 45cm,
+# 두 센서 모두 전방 프로파일 중심선(+21cm), 좌우 중앙에 근사 배치.
+# 2026-09-09 사용자가 위 위치와 카메라 하향 15도를 재확인.
+lidar_x: 0.21
+lidar_y: 0.0
+lidar_z: 0.52
+# 2026-09-08: 카메라 쪽 실제 전진 시 엔코더 +x / ICP -x를 확인.
+# ROS laser 프레임의 +x는 본체 후방: 기존 전방 정렬 가정을 보정.
+lidar_yaw_degrees: 180.0
+camera_x: 0.21
+camera_y: 0.0
+camera_z: 0.45
+camera_pitch_degrees: 15.0
